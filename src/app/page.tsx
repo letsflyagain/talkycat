@@ -301,7 +301,7 @@ export default function Home() {
 
             {/* Script Archive List Section */}
             <section className="flex flex-col gap-4 w-full">
-              <div className="flex items-center justify-between">
+              <div className="flex items-center">
                 <div className="flex items-center gap-1.5">
                   <span className="material-symbols-outlined text-[20px] text-[#004ac6]">
                     folder_open
@@ -310,15 +310,6 @@ export default function Home() {
                     내 스크립트 보관함
                   </h3>
                 </div>
-                <button
-                  className="font-label-sm text-[11px] text-[#004ac6] font-bold flex items-center gap-0.5 hover:opacity-80 transition-opacity"
-                  type="button"
-                >
-                  전체보기{" "}
-                  <span className="material-symbols-outlined text-[14px]">
-                    arrow_forward
-                  </span>
-                </button>
               </div>
 
               {/* Filter Pills */}

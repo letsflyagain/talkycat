@@ -161,9 +161,8 @@ function TalkySheetContent() {
                 스크립트
               </h1>
             </div>
-            <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#e2e7ff] text-[#434655] font-label-sm text-xs shadow-sm">
-              <span className="inline-block w-2 h-2 rounded-full bg-[#007d55]" />
-              <span>{nickname}님 🐾</span>
+            <div className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#e2e7ff] text-[#434655] font-label-sm text-xs shadow-sm">
+              <span>{nickname}님</span>
             </div>
           </div>
         </header>

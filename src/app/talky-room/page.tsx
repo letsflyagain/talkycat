@@ -162,7 +162,7 @@ function TalkyRoomContent() {
 
   return (
     <div className="min-h-screen bg-[#faf8ff] text-[#131b2e] flex flex-col items-center justify-start relative select-none">
-      <div className="w-full max-w-[480px] min-h-screen bg-[#faf8ff] relative shadow-xl border-x border-[#eaedff]/60 flex flex-col pb-28">
+      <div className="w-full max-w-[480px] min-h-screen bg-[#faf8ff] relative shadow-xl border-x border-[#eaedff]/60 flex flex-col pb-72">
         
         {/* Top Header */}
         <header className="fixed top-0 w-full max-w-[480px] z-40 pt-safe bg-[#faf8ff]/90 backdrop-blur-md border-b border-[#eaedff]">
@@ -200,7 +200,7 @@ function TalkyRoomContent() {
           </div>
         </header>
 
-        {/* Main Content (Scrollable Flow including title, avatar, sentence card, and control deck) */}
+        {/* Main Content (Scrollable Flow including title, avatar, and sentence card) */}
         <main className="flex-1 flex flex-col relative w-full pt-20 pb-8 bg-[#faf8ff]">
           <div className="flex flex-col w-full relative select-none gap-4 px-4">
 
@@ -351,90 +351,91 @@ function TalkyRoomContent() {
               </div>
             </div>
 
-            {/* Control Deck (In-flow with content: 다시듣기, 마이크터치, 종료) */}
-            <div className="w-full">
-              <div className="w-full rounded-2xl bg-[#f2f3ff] p-4 shadow-sm flex items-center justify-around border border-[#eaedff]">
-                <div className="flex flex-col items-center">
-                  <button
-                    className="w-12 h-12 rounded-full bg-[#dae2fd] text-[#131b2e] flex items-center justify-center hover:bg-[#c3c6d7] active:scale-90 transition shadow-sm cursor-pointer"
-                    onClick={() => speakCurrentLine(currentLine.english)}
-                    type="button"
-                    aria-label="다시듣기"
-                  >
-                    <span className="material-symbols-outlined text-[24px]">replay</span>
-                  </button>
-                  <span className="font-label-sm text-xs text-[#434655] mt-1.5 font-bold">다시듣기</span>
-                </div>
-
-                <div className="flex flex-col items-center">
-                  <button
-                    className={`w-14 h-14 rounded-full ${
-                      isListening ? "bg-emerald-600 animate-pulse" : "bg-[#004ac6]"
-                    } text-white shadow-lg shadow-[#004ac6]/30 flex items-center justify-center active:scale-95 transition cursor-pointer`}
-                    onClick={handleMicClick}
-                    type="button"
-                    aria-label="음성 녹음 및 말하기"
-                  >
-                    <span className="material-symbols-outlined text-[26px]">
-                      {isListening ? "mic_off" : "mic"}
-                    </span>
-                  </button>
-                  <span className="font-label-sm text-xs text-[#004ac6] font-bold mt-1" id="mic-hint-text">
-                    {isListening ? "듣고 있어요..." : "마이크 터치"}
-                  </span>
-                </div>
-
-                <div className="flex flex-col items-center">
-                  <button
-                    className="w-12 h-12 rounded-full bg-[#ffdad6] text-[#93000a] flex items-center justify-center hover:bg-[#ba1a1a] hover:text-white active:scale-90 transition shadow-sm cursor-pointer"
-                    onClick={() => router.push("/")}
-                    type="button"
-                    aria-label="학습 종료"
-                  >
-                    <span className="material-symbols-outlined text-[22px]">logout</span>
-                  </button>
-                  <span className="font-label-sm text-xs text-[#93000a] mt-1.5 font-bold">종료</span>
-                </div>
-              </div>
-            </div>
-
           </div>
         </main>
 
-        {/* Fixed Bottom Deck: Only the 4 Enlarged Action Buttons */}
-        <div className="fixed bottom-0 left-0 right-0 z-40 bg-[#faf8ff]/95 backdrop-blur-md border-t border-[#e2e7ff]/60 p-3 pb-safe flex items-center justify-center">
-          <div className="w-full max-w-[480px] grid grid-cols-4 gap-2">
-            <button
-              className="py-3.5 px-1 rounded-2xl bg-[#eaedff] hover:bg-[#e2e7ff]/80 text-[#131b2e] font-label-md text-xs font-bold whitespace-nowrap active:scale-95 transition cursor-pointer flex flex-col items-center justify-center gap-1 shadow-sm"
-              onClick={() => speakCurrentLine(currentLine.english)}
-              type="button"
-            >
-              <span className="text-[17px]">🎧</span>
-              <span>전체듣기</span>
-            </button>
-            <button
-              className="py-3.5 px-1 rounded-2xl bg-[#eaedff] hover:bg-[#e2e7ff]/80 text-[#131b2e] font-label-md text-xs font-bold whitespace-nowrap active:scale-95 transition cursor-pointer flex flex-col items-center justify-center gap-1 shadow-sm"
-              onClick={handleMicClick}
-              type="button"
-            >
-              <span className="text-[17px]">🗣️</span>
-              <span>따라하기</span>
-            </button>
-            <button
-              className="py-3.5 px-1 rounded-2xl bg-[#004ac6] hover:bg-[#2563eb] text-white font-label-md text-xs font-bold whitespace-nowrap shadow-md shadow-[#004ac6]/25 active:scale-95 transition cursor-pointer flex flex-col items-center justify-center gap-1"
-              type="button"
-            >
-              <span className="text-[17px]">🎭</span>
-              <span>롤플레이</span>
-            </button>
-            <button
-              className="py-3.5 px-1 rounded-2xl bg-[#eaedff] hover:bg-[#e2e7ff]/80 text-[#131b2e] font-label-md text-xs font-bold whitespace-nowrap active:scale-95 transition cursor-pointer flex flex-col items-center justify-center gap-1 shadow-sm"
-              onClick={handleNextTurn}
-              type="button"
-            >
-              <span className="text-[17px]">🔄</span>
-              <span>역할교대</span>
-            </button>
+        {/* Fixed Bottom Deck: Combined Control Deck (3 buttons) & Action Buttons (4 buttons) in a single frame */}
+        <div className="fixed bottom-0 left-0 right-0 z-40 bg-[#faf8ff]/95 backdrop-blur-md border-t border-[#e2e7ff]/60 p-3 pb-safe flex items-center justify-center shadow-lg">
+          <div className="w-full max-w-[480px] flex flex-col gap-2.5 bg-white/80 p-3 rounded-2xl border border-[#eaedff] shadow-sm">
+            {/* Control Deck (3 buttons: 다시듣기, 마이크터치, 종료) */}
+            <div className="w-full rounded-2xl bg-[#f2f3ff] p-3 shadow-sm flex items-center justify-around border border-[#eaedff]">
+              <div className="flex flex-col items-center">
+                <button
+                  className="w-12 h-12 rounded-full bg-[#dae2fd] text-[#131b2e] flex items-center justify-center hover:bg-[#c3c6d7] active:scale-90 transition shadow-sm cursor-pointer"
+                  onClick={() => speakCurrentLine(currentLine.english)}
+                  type="button"
+                  aria-label="다시듣기"
+                >
+                  <span className="material-symbols-outlined text-[24px]">replay</span>
+                </button>
+                <span className="font-label-sm text-xs text-[#434655] mt-1.5 font-bold">다시듣기</span>
+              </div>
+
+              <div className="flex flex-col items-center">
+                <button
+                  className={`w-14 h-14 rounded-full ${
+                    isListening ? "bg-emerald-600 animate-pulse" : "bg-[#004ac6]"
+                  } text-white shadow-lg shadow-[#004ac6]/30 flex items-center justify-center active:scale-95 transition cursor-pointer`}
+                  onClick={handleMicClick}
+                  type="button"
+                  aria-label="음성 녹음 및 말하기"
+                >
+                  <span className="material-symbols-outlined text-[26px]">
+                    {isListening ? "mic_off" : "mic"}
+                  </span>
+                </button>
+                <span className="font-label-sm text-xs text-[#004ac6] font-bold mt-1" id="mic-hint-text">
+                  {isListening ? "듣고 있어요..." : "마이크 터치"}
+                </span>
+              </div>
+
+              <div className="flex flex-col items-center">
+                <button
+                  className="w-12 h-12 rounded-full bg-[#ffdad6] text-[#93000a] flex items-center justify-center hover:bg-[#ba1a1a] hover:text-white active:scale-90 transition shadow-sm cursor-pointer"
+                  onClick={() => router.push("/")}
+                  type="button"
+                  aria-label="학습 종료"
+                >
+                  <span className="material-symbols-outlined text-[22px]">logout</span>
+                </button>
+                <span className="font-label-sm text-xs text-[#93000a] mt-1.5 font-bold">종료</span>
+              </div>
+            </div>
+
+            {/* Action Buttons (4 buttons: 전체듣기, 따라하기, 롤플레이, 역할교대) */}
+            <div className="w-full grid grid-cols-4 gap-2">
+              <button
+                className="py-3.5 px-1 rounded-2xl bg-[#eaedff] hover:bg-[#e2e7ff]/80 text-[#131b2e] font-label-md text-xs font-bold whitespace-nowrap active:scale-95 transition cursor-pointer flex flex-col items-center justify-center gap-1 shadow-sm"
+                onClick={() => speakCurrentLine(currentLine.english)}
+                type="button"
+              >
+                <span className="text-[17px]">🎧</span>
+                <span>전체듣기</span>
+              </button>
+              <button
+                className="py-3.5 px-1 rounded-2xl bg-[#eaedff] hover:bg-[#e2e7ff]/80 text-[#131b2e] font-label-md text-xs font-bold whitespace-nowrap active:scale-95 transition cursor-pointer flex flex-col items-center justify-center gap-1 shadow-sm"
+                onClick={handleMicClick}
+                type="button"
+              >
+                <span className="text-[17px]">🗣️</span>
+                <span>따라하기</span>
+              </button>
+              <button
+                className="py-3.5 px-1 rounded-2xl bg-[#004ac6] hover:bg-[#2563eb] text-white font-label-md text-xs font-bold whitespace-nowrap shadow-md shadow-[#004ac6]/25 active:scale-95 transition cursor-pointer flex flex-col items-center justify-center gap-1"
+                type="button"
+              >
+                <span className="text-[17px]">🎭</span>
+                <span>롤플레이</span>
+              </button>
+              <button
+                className="py-3.5 px-1 rounded-2xl bg-[#eaedff] hover:bg-[#e2e7ff]/80 text-[#131b2e] font-label-md text-xs font-bold whitespace-nowrap active:scale-95 transition cursor-pointer flex flex-col items-center justify-center gap-1 shadow-sm"
+                onClick={handleNextTurn}
+                type="button"
+              >
+                <span className="text-[17px]">🔄</span>
+                <span>역할교대</span>
+              </button>
+            </div>
           </div>
         </div>
 
