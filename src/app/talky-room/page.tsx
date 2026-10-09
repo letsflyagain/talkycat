@@ -1,9 +1,11 @@
 "use client";
 
-import React, { useState, useEffect, Suspense, useCallback } from "react";
+import React, { useState, useEffect, Suspense, useCallback, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Image from "next/image";
 import { GeneratedScript, DialogueLine } from "@/types/script";
+
+type LearningMode = "listen_all" | "shadowing" | "roleplay" | "role_switch";
 
 function TalkyRoomContent() {
   const router = useRouter();
@@ -11,7 +13,7 @@ function TalkyRoomContent() {
   const id = searchParams.get("id");
 
   const [script, setScript] = useState<GeneratedScript | null>(null);
-  const [nickname, setNickname] = useState("지은");
+  const [nickname, setNickname] = useState("사용자");
   const [currentTurn, setCurrentTurn] = useState(0);
   const [speed, setSpeed] = useState<number>(1.0);
   const [showKorean, setShowKorean] = useState(false);
@@ -19,6 +21,265 @@ function TalkyRoomContent() {
   const [isFeedbackModalOpen, setIsFeedbackModalOpen] = useState(false);
   const [isMounted, setIsMounted] = useState(false);
   const [speaking, setSpeaking] = useState(false);
+  const [mode, setMode] = useState<LearningMode>("listen_all");
+  const [statusText, setStatusText] = useState("대화 준비 중 🐾");
+  const [selectedVoice, setSelectedVoice] = useState<SpeechSynthesisVoice | null>(null);
+  const [recognizedText, setRecognizedText] = useState("");
+  const [sttStatus, setSttStatus] = useState<"idle" | "listening" | "success">("idle");
+
+  const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const isFirstPlayRef = useRef<boolean>(true);
+  const recognitionRef = useRef<any>(null);
+  const isRecognizingRef = useRef<boolean>(false);
+  const silenceTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const latestTranscriptRef = useRef<string>("");
+
+  const isSpeakingMode = mode !== "listen_all";
+
+  const clearTimer = () => {
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+    if (silenceTimerRef.current) {
+      clearTimeout(silenceTimerRef.current);
+      silenceTimerRef.current = null;
+    }
+  };
+
+  const kickstartAudioHardware = () => {
+    try {
+      const AudioContextClass = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      if (!AudioContextClass) return;
+      const ctx = new AudioContextClass();
+      const buffer = ctx.createBuffer(1, 1, 22050);
+      const source = ctx.createBufferSource();
+      source.buffer = buffer;
+      source.connect(ctx.destination);
+      source.start(0);
+    } catch (e) {
+      console.warn("AudioContext unlock failed:", e);
+    }
+  };
+
+  const wakeAudioOutput = async () => {
+    try {
+      const AudioContextClass = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      if (AudioContextClass) {
+        const ctx = new AudioContextClass();
+        if (ctx.state === "suspended") {
+          await ctx.resume();
+        }
+        const buffer = ctx.createBuffer(1, 1, 22050);
+        const source = ctx.createBufferSource();
+        source.buffer = buffer;
+        source.connect(ctx.destination);
+        source.start(0);
+      }
+    } catch (e) {
+      console.warn("Audio wake-up failed:", e);
+    }
+  };
+
+  const teardownSTT = useCallback(() => {
+    if (silenceTimerRef.current) {
+      clearTimeout(silenceTimerRef.current);
+      silenceTimerRef.current = null;
+    }
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.stop();
+        recognitionRef.current.abort();
+      } catch {}
+    }
+    isRecognizingRef.current = false;
+    setIsListening(false);
+  }, []);
+
+  const normalizeText = (text: string) => {
+    return text.toLowerCase().replace(/[^a-z0-9\s]/g, "").trim();
+  };
+
+  const checkMatch = (spoken: string, target: string) => {
+    const normSpoken = normalizeText(spoken);
+    const normTarget = normalizeText(target);
+    if (!normSpoken || !normTarget) return false;
+
+    if (normTarget.includes(normSpoken) || normSpoken.includes(normTarget)) {
+      return true;
+    }
+
+    const targetWords = normTarget.split(/\s+/);
+    const spokenWords = normSpoken.split(/\s+/);
+    let matches = 0;
+    for (const w of targetWords) {
+      if (spokenWords.includes(w)) matches++;
+    }
+    const matchRate = matches / Math.max(1, targetWords.length);
+    return matchRate >= 0.7; // 70% or more matching rate
+  };
+
+  const stopListening = useCallback(() => {
+    teardownSTT();
+    setSttStatus("idle");
+    setStatusText("음성 인식이 일시중지되었습니다. 다시 누르면 시작합니다. 🐾");
+  }, [teardownSTT]);
+
+  const handleNextTurn = useCallback(() => {
+    clearTimer();
+    teardownSTT();
+    if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      window.speechSynthesis.cancel();
+    }
+    if (!script || !script.dialogue) return;
+    if (currentTurn < script.dialogue.length - 1) {
+      setCurrentTurn((prev) => prev + 1);
+      setShowKorean(false);
+      setSttStatus("idle");
+      setRecognizedText("");
+      latestTranscriptRef.current = "";
+    } else {
+      setIsFeedbackModalOpen(true);
+      // Save completion
+      try {
+        const newCount = (script.completedCount || 0) + 1;
+        const updatedScript = { ...script, completedCount: newCount };
+        localStorage.setItem(`talkycat_script_${script.id}`, JSON.stringify(updatedScript));
+
+        const saved = localStorage.getItem("talkycat_scripts");
+        if (saved) {
+          const parsedList: GeneratedScript[] = JSON.parse(saved);
+          if (Array.isArray(parsedList)) {
+            const updatedList = parsedList.map((s) => (s.id === script.id ? updatedScript : s));
+            localStorage.setItem("talkycat_scripts", JSON.stringify(updatedList));
+          }
+        }
+
+        const todaySent = Number(localStorage.getItem("talkycat_today_sentences") || "0") + script.dialogue.length;
+        localStorage.setItem("talkycat_today_sentences", todaySent.toString());
+      } catch (e) {
+        console.error("Failed to save session completion", e);
+      }
+    }
+  }, [script, currentTurn, teardownSTT]);
+
+  const evaluateSpeech = useCallback((transcript: string) => {
+    if (!script || !script.dialogue) return;
+    const target = script.dialogue[currentTurn]?.english || "";
+
+    if (checkMatch(transcript, target)) {
+      teardownSTT();
+      setSttStatus("success");
+      setIsListening(false);
+      setStatusText("완벽하다냥! 🎉");
+
+      // Sentence transition buffer: 2 seconds delay before moving to next step
+      timerRef.current = setTimeout(() => {
+        handleNextTurn();
+      }, 2000);
+    }
+  }, [script, currentTurn, handleNextTurn, teardownSTT]);
+
+  const startListening = useCallback(() => {
+    if (!isSpeakingMode) return;
+    if (isRecognizingRef.current) return;
+
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.stop();
+        recognitionRef.current.abort();
+      } catch {}
+
+      try {
+        recognitionRef.current.start();
+        isRecognizingRef.current = true;
+        setIsListening(true);
+        setSttStatus("listening");
+        setStatusText("말씀하세요, 음성 인식 중... 🎙️");
+      } catch (e) {
+        console.warn("Recognition start error:", e);
+        isRecognizingRef.current = false;
+        setIsListening(false);
+      }
+    }
+  }, [isSpeakingMode]);
+
+  // Initialize Speech Recognition
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const SpeechRecognitionAPI = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (SpeechRecognitionAPI) {
+      const recognition = new SpeechRecognitionAPI();
+      recognition.lang = "en-US";
+      recognition.interimResults = true;
+      recognition.maxAlternatives = 1;
+
+      recognition.onresult = (event: any) => {
+        let interim = "";
+        let finalTranscript = "";
+
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+          const transcript = event.results[i][0].transcript;
+          if (event.results[i].isFinal) {
+            finalTranscript += transcript;
+          } else {
+            interim += transcript;
+          }
+        }
+
+        const currentTranscript = finalTranscript || interim || latestTranscriptRef.current;
+        latestTranscriptRef.current = currentTranscript;
+        setRecognizedText(currentTranscript);
+
+        // Silence debounce fallback (1.5s)
+        if (silenceTimerRef.current) {
+          clearTimeout(silenceTimerRef.current);
+        }
+        silenceTimerRef.current = setTimeout(() => {
+          if (isRecognizingRef.current && currentTranscript) {
+            evaluateSpeech(currentTranscript);
+          }
+        }, 1500);
+
+        if (finalTranscript) {
+          evaluateSpeech(finalTranscript);
+        }
+      };
+
+      recognition.onerror = (event: any) => {
+        console.warn("Speech recognition error", event.error);
+        if (event.error === "no-speech") {
+          setStatusText("다시 편하게 말해보라냥! 🐾");
+        }
+        isRecognizingRef.current = false;
+        setIsListening(false);
+      };
+
+      recognition.onend = () => {
+        isRecognizingRef.current = false;
+        setIsListening(false);
+      };
+
+      recognitionRef.current = recognition;
+    }
+  }, [evaluateSpeech]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.speechSynthesis) return;
+    const loadVoices = () => {
+      const voices = window.speechSynthesis.getVoices();
+      const enVoice = voices.find((v) => v.lang.startsWith("en-US") || v.lang.startsWith("en"));
+      if (enVoice) {
+        setSelectedVoice(enVoice);
+      }
+    };
+    loadVoices();
+    if (window.speechSynthesis.onvoiceschanged !== undefined) {
+      window.speechSynthesis.onvoiceschanged = loadVoices;
+    }
+
+    return () => clearTimer();
+  }, []);
 
   const loadScriptData = useCallback(() => {
     try {
@@ -84,66 +345,153 @@ function TalkyRoomContent() {
     loadScriptData();
   }, [loadScriptData]);
 
-  const speakCurrentLine = useCallback((text: string) => {
-    if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
-    window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = "en-US";
-    utterance.rate = speed;
-
-    utterance.onstart = () => setSpeaking(true);
-    utterance.onend = () => setSpeaking(false);
-    utterance.onerror = () => setSpeaking(false);
-
-    window.speechSynthesis.speak(utterance);
-  }, [speed]);
-
-  useEffect(() => {
-    if (script && script.dialogue && script.dialogue[currentTurn]) {
-      speakCurrentLine(script.dialogue[currentTurn].english);
+  const speakCurrentLine = useCallback(async (text: string, onEndCallback?: () => void) => {
+    if (typeof window === "undefined" || !("speechSynthesis" in window)) {
+      if (onEndCallback) onEndCallback();
+      return;
     }
-  }, [currentTurn, script, speakCurrentLine]);
 
-  const handleNextTurn = () => {
-    if (!script || !script.dialogue) return;
-    if (currentTurn < script.dialogue.length - 1) {
-      setCurrentTurn(currentTurn + 1);
-      setShowKorean(false);
-    } else {
-      setIsFeedbackModalOpen(true);
-      handleCompleteSession();
-    }
-  };
+    // 1. Teardown STT completely and wake up audio output channel
+    teardownSTT();
+    await wakeAudioOutput();
 
-  const handleCompleteSession = () => {
-    if (!script) return;
-    try {
-      const newCount = (script.completedCount || 0) + 1;
-      const updatedScript = { ...script, completedCount: newCount };
-      localStorage.setItem(`talkycat_script_${script.id}`, JSON.stringify(updatedScript));
-
-      const saved = localStorage.getItem("talkycat_scripts");
-      if (saved) {
-        const parsedList: GeneratedScript[] = JSON.parse(saved);
-        if (Array.isArray(parsedList)) {
-          const updatedList = parsedList.map((s) => (s.id === script.id ? updatedScript : s));
-          localStorage.setItem("talkycat_scripts", JSON.stringify(updatedList));
-        }
+    const speak = () => {
+      window.speechSynthesis.cancel();
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.lang = "en-US";
+      utterance.rate = speed;
+      if (selectedVoice) {
+        utterance.voice = selectedVoice;
       }
 
-      const todaySent = Number(localStorage.getItem("talkycat_today_sentences") || "0") + script.dialogue.length;
-      localStorage.setItem("talkycat_today_sentences", todaySent.toString());
-    } catch (e) {
-      console.error("Failed to save session completion", e);
+      utterance.onstart = () => {
+        setSpeaking(true);
+        setStatusText("토키캣 말하는 중 🐾");
+      };
+      utterance.onend = () => {
+        setSpeaking(false);
+        if (onEndCallback) onEndCallback();
+      };
+      utterance.onerror = () => {
+        setSpeaking(false);
+        if (onEndCallback) onEndCallback();
+      };
+
+      window.speechSynthesis.speak(utterance);
+    };
+
+    if (isFirstPlayRef.current) {
+      isFirstPlayRef.current = false;
+      kickstartAudioHardware();
+      setTimeout(() => {
+        speak();
+      }, 300);
+    } else {
+      // 300ms safety buffer for hardware output switching from mic to speaker
+      setTimeout(() => {
+        speak();
+      }, 300);
     }
+  }, [speed, selectedVoice, teardownSTT]);
+
+  const handleFullNextTurn = useCallback((finishedTurn: number, dialogueList: DialogueLine[]) => {
+    if (finishedTurn < dialogueList.length - 1) {
+      setStatusText("2초 후 다음 문장으로 이동합니다... 🐾");
+      timerRef.current = setTimeout(() => {
+        setCurrentTurn(finishedTurn + 1);
+        setShowKorean(false);
+      }, 2000);
+    } else {
+      setStatusText("미션 완료! 🐾");
+      setIsFeedbackModalOpen(true);
+      // Save completion
+      try {
+        const newCount = (script?.completedCount || 0) + 1;
+        const updatedScript = { ...script!, completedCount: newCount };
+        localStorage.setItem(`talkycat_script_${script?.id}`, JSON.stringify(updatedScript));
+
+        const saved = localStorage.getItem("talkycat_scripts");
+        if (saved) {
+          const parsedList: GeneratedScript[] = JSON.parse(saved);
+          if (Array.isArray(parsedList)) {
+            const updatedList = parsedList.map((s) => (s.id === script?.id ? updatedScript : s));
+            localStorage.setItem("talkycat_scripts", JSON.stringify(updatedList));
+          }
+        }
+
+        const todaySent = Number(localStorage.getItem("talkycat_today_sentences") || "0") + dialogueList.length;
+        localStorage.setItem("talkycat_today_sentences", todaySent.toString());
+      } catch (e) {
+        console.error("Failed to save session completion", e);
+      }
+    }
+  }, [script]);
+
+  // Main playback & timing control flow with initial wait and anti-echo buffer
+  useEffect(() => {
+    clearTimer();
+    teardownSTT();
+    setSttStatus("idle");
+    setRecognizedText("");
+    latestTranscriptRef.current = "";
+
+    if (!script || !script.dialogue) return;
+    const dialogueList = script.dialogue;
+
+    if (mode === "listen_all") {
+      if (currentTurn === 0) {
+        setStatusText("2초 후 전체듣기가 시작됩니다... 🐾");
+        timerRef.current = setTimeout(() => {
+          speakCurrentLine(dialogueList[0].english, () => {
+            handleFullNextTurn(0, dialogueList);
+          });
+        }, 2000);
+      } else if (currentTurn < dialogueList.length) {
+        speakCurrentLine(dialogueList[currentTurn].english, () => {
+          handleFullNextTurn(currentTurn, dialogueList);
+        });
+      }
+    } else {
+      // Speaking modes with initial 2s wait and anti-echo buffer (900ms)
+      setStatusText("2초 후 발화 준비... 🐾");
+      timerRef.current = setTimeout(() => {
+        speakCurrentLine(dialogueList[currentTurn].english, () => {
+          setStatusText("마이크 활성화 대기 중... 🎙️");
+          timerRef.current = setTimeout(() => {
+            startListening();
+          }, 900);
+        });
+      }, 2000);
+    }
+  }, [currentTurn, script, mode, speakCurrentLine, handleFullNextTurn, startListening, teardownSTT]);
+
+  const handleManualReplay = () => {
+    clearTimer();
+    teardownSTT();
+    if (!script || !script.dialogue) return;
+
+    speakCurrentLine(script.dialogue[currentTurn].english, () => {
+      if (mode === "listen_all") {
+        handleFullNextTurn(currentTurn, script.dialogue);
+      } else {
+        setStatusText("마이크 활성화 대기 중... 🎙️");
+        timerRef.current = setTimeout(() => {
+          startListening();
+        }, 900);
+      }
+    });
   };
 
   const handleMicClick = () => {
-    setIsListening(true);
-    setTimeout(() => {
-      setIsListening(false);
-      handleNextTurn();
-    }, 1500);
+    if (!isSpeakingMode) {
+      setStatusText("전체듣기 모드에서는 마이크를 사용할 수 없습니다 🎧");
+      return;
+    }
+    if (isListening) {
+      stopListening();
+    } else {
+      startListening();
+    }
   };
 
   if (!isMounted || !script) {
@@ -217,7 +565,9 @@ function TalkyRoomContent() {
                       {script.category}
                     </span>
                   </div>
-                  <p className="font-body-sm text-[11px] text-[#434655] truncate">롤플레이 실전 음성 훈련</p>
+                  <p className="font-body-sm text-[11px] text-[#434655] truncate">
+                    {mode === "listen_all" ? "전체듣기 모드 (핸즈프리 감상)" : "발화 훈련 모드 (정밀 음성 인식 & 오디오 튜닝)"}
+                  </p>
                 </div>
               </div>
             </div>
@@ -233,23 +583,37 @@ function TalkyRoomContent() {
                 </div>
 
                 <div className="absolute -bottom-2.5 flex items-center gap-1 px-3.5 py-1.5 rounded-full bg-[#004ac6] text-white shadow-md">
-                  <span className={`inline-block w-2 h-2 rounded-full bg-[#6ffbbe] ${speaking ? "animate-pulse" : ""}`} />
+                  <span className={`inline-block w-2 h-2 rounded-full bg-[#6ffbbe] ${speaking || isListening ? "animate-pulse" : ""}`} />
                   <span className="font-label-sm text-xs tracking-wide font-bold">
                     {speaking ? "토키캣 말하는 중 🐾" : isListening ? "듣고 있어요 🎙️" : "대화 준비 중 🐾"}
                   </span>
                 </div>
               </div>
 
-              <div className="flex items-center justify-center gap-1.5 h-7 mt-4 px-4 py-1.5 rounded-full bg-[#f2f3ff] shadow-sm">
-                <div className="w-1 rounded-full bg-[#004ac6] animate-[pulse_0.7s_infinite] h-3" />
-                <div className="w-1 rounded-full bg-[#004ac6] animate-[pulse_0.5s_infinite] h-5" />
-                <div className="w-1 rounded-full bg-[#004ac6] animate-[pulse_0.9s_infinite] h-2" />
-                <div className="w-1 rounded-full bg-[#2563eb] animate-[pulse_0.4s_infinite] h-6" />
-                <div className="w-1 rounded-full bg-[#004ac6] animate-[pulse_0.6s_infinite] h-4" />
-                <div className="w-1 rounded-full bg-[#006242] animate-[pulse_0.5s_infinite] h-4" />
-                <span className="font-label-sm text-xs text-[#434655] ml-1.5 font-medium">
-                  {isListening ? "말씀하세요, 음성 인식 중... 🎙️" : "편하게 듣고 따라해보세요냥 🐾"}
-                </span>
+              <div className="flex flex-col items-center justify-center gap-1 w-full mt-2">
+                <div className="flex items-center justify-center gap-1.5 h-7 px-4 py-1.5 rounded-full bg-[#f2f3ff] shadow-sm">
+                  <div className="w-1 rounded-full bg-[#004ac6] animate-[pulse_0.7s_infinite] h-3" />
+                  <div className="w-1 rounded-full bg-[#004ac6] animate-[pulse_0.5s_infinite] h-5" />
+                  <div className="w-1 rounded-full bg-[#004ac6] animate-[pulse_0.9s_infinite] h-2" />
+                  <div className="w-1 rounded-full bg-[#2563eb] animate-[pulse_0.4s_infinite] h-6" />
+                  <div className="w-1 rounded-full bg-[#004ac6] animate-[pulse_0.6s_infinite] h-4" />
+                  <div className="w-1 rounded-full bg-[#006242] animate-[pulse_0.5s_infinite] h-4" />
+                  <span className="font-label-sm text-xs text-[#434655] ml-1.5 font-medium">
+                    {statusText}
+                  </span>
+                </div>
+
+                {sttStatus === "success" && (
+                  <div className="mt-2 px-3 py-1.5 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-bold flex items-center gap-1.5 animate-in fade-in shadow-sm">
+                    <span className="material-symbols-outlined text-[16px]">check_circle</span>
+                    <span>완벽하다냥! 🎉 다음 단계로 넘어간다냥! 🌟</span>
+                  </div>
+                )}
+                {recognizedText && (
+                  <p className="text-[11px] text-[#434655] mt-1 italic text-center font-medium">
+                    인식된 음성: &quot;{recognizedText}&quot;
+                  </p>
+                )}
               </div>
 
               <div className="flex items-center gap-1.5 mt-3">
@@ -295,7 +659,7 @@ function TalkyRoomContent() {
                   <button
                     aria-label="이 문장 다시 듣기"
                     className="w-10 h-10 rounded-full bg-[#dbe1ff] flex items-center justify-center text-[#004ac6] hover:bg-[#004ac6] hover:text-white active:scale-90 transition shadow-sm cursor-pointer"
-                    onClick={() => speakCurrentLine(currentLine.english)}
+                    onClick={handleManualReplay}
                     type="button"
                   >
                     <span className="material-symbols-outlined text-[22px]">volume_up</span>
@@ -357,12 +721,12 @@ function TalkyRoomContent() {
         {/* Fixed Bottom Deck: Combined Control Deck (3 buttons) & Action Buttons (4 buttons) in a single frame */}
         <div className="fixed bottom-0 left-0 right-0 z-40 bg-[#faf8ff]/95 backdrop-blur-md border-t border-[#e2e7ff]/60 p-3 pb-safe flex items-center justify-center shadow-lg">
           <div className="w-full max-w-[480px] flex flex-col gap-2.5 bg-white/80 p-3 rounded-2xl border border-[#eaedff] shadow-sm">
-            {/* Control Deck (3 buttons: 다시듣기, 마이크터치, 종료) */}
+            {/* Control Deck (3 buttons: 다시듣기, 마이크터치/제어, 종료) */}
             <div className="w-full rounded-2xl bg-[#f2f3ff] p-3 shadow-sm flex items-center justify-around border border-[#eaedff]">
               <div className="flex flex-col items-center">
                 <button
                   className="w-12 h-12 rounded-full bg-[#dae2fd] text-[#131b2e] flex items-center justify-center hover:bg-[#c3c6d7] active:scale-90 transition shadow-sm cursor-pointer"
-                  onClick={() => speakCurrentLine(currentLine.english)}
+                  onClick={handleManualReplay}
                   type="button"
                   aria-label="다시듣기"
                 >
@@ -374,18 +738,27 @@ function TalkyRoomContent() {
               <div className="flex flex-col items-center">
                 <button
                   className={`w-14 h-14 rounded-full ${
-                    isListening ? "bg-emerald-600 animate-pulse" : "bg-[#004ac6]"
-                  } text-white shadow-lg shadow-[#004ac6]/30 flex items-center justify-center active:scale-95 transition cursor-pointer`}
+                    !isSpeakingMode
+                      ? "bg-slate-300 cursor-not-allowed opacity-50"
+                      : isListening
+                      ? "bg-emerald-600 animate-pulse shadow-lg shadow-emerald-600/30"
+                      : "bg-[#004ac6] shadow-lg shadow-[#004ac6]/30"
+                  } text-white flex items-center justify-center active:scale-95 transition cursor-pointer`}
                   onClick={handleMicClick}
                   type="button"
-                  aria-label="음성 녹음 및 말하기"
+                  aria-label="음성 인식 제어"
+                  disabled={!isSpeakingMode}
                 >
                   <span className="material-symbols-outlined text-[26px]">
-                    {isListening ? "mic_off" : "mic"}
+                    {!isSpeakingMode ? "mic_off" : isListening ? "mic" : "mic"}
                   </span>
                 </button>
                 <span className="font-label-sm text-xs text-[#004ac6] font-bold mt-1" id="mic-hint-text">
-                  {isListening ? "듣고 있어요..." : "마이크 터치"}
+                  {!isSpeakingMode
+                    ? "마이크 비활성화됨"
+                    : isListening
+                    ? "듣고 있어요... (터치시 일시정지)"
+                    : "버튼을 눌러 다시 말해보라냥! 🐾"}
                 </span>
               </div>
 
@@ -405,31 +778,76 @@ function TalkyRoomContent() {
             {/* Action Buttons (4 buttons: 전체듣기, 따라하기, 롤플레이, 역할교대) */}
             <div className="w-full grid grid-cols-4 gap-2">
               <button
-                className="py-3.5 px-1 rounded-2xl bg-[#eaedff] hover:bg-[#e2e7ff]/80 text-[#131b2e] font-label-md text-xs font-bold whitespace-nowrap active:scale-95 transition cursor-pointer flex flex-col items-center justify-center gap-1 shadow-sm"
-                onClick={() => speakCurrentLine(currentLine.english)}
+                className={`py-3.5 px-1 rounded-2xl ${
+                  mode === "listen_all" ? "bg-[#004ac6] text-white shadow-md shadow-[#004ac6]/25" : "bg-[#eaedff] hover:bg-[#e2e7ff]/80 text-[#131b2e]"
+                } font-label-md text-xs font-bold whitespace-nowrap active:scale-95 transition cursor-pointer flex flex-col items-center justify-center gap-1 shadow-sm`}
+                onClick={() => {
+                  clearTimer();
+                  teardownSTT();
+                  if (typeof window !== "undefined" && "speechSynthesis" in window) {
+                    window.speechSynthesis.cancel();
+                  }
+                  setMode("listen_all");
+                  setCurrentTurn(0);
+                  setShowKorean(false);
+                }}
                 type="button"
               >
                 <span className="text-[17px]">🎧</span>
                 <span>전체듣기</span>
               </button>
               <button
-                className="py-3.5 px-1 rounded-2xl bg-[#eaedff] hover:bg-[#e2e7ff]/80 text-[#131b2e] font-label-md text-xs font-bold whitespace-nowrap active:scale-95 transition cursor-pointer flex flex-col items-center justify-center gap-1 shadow-sm"
-                onClick={handleMicClick}
+                className={`py-3.5 px-1 rounded-2xl ${
+                  mode === "shadowing" ? "bg-[#004ac6] text-white shadow-md shadow-[#004ac6]/25" : "bg-[#eaedff] hover:bg-[#e2e7ff]/80 text-[#131b2e]"
+                } font-label-md text-xs font-bold whitespace-nowrap active:scale-95 transition cursor-pointer flex flex-col items-center justify-center gap-1 shadow-sm`}
+                onClick={() => {
+                  clearTimer();
+                  teardownSTT();
+                  if (typeof window !== "undefined" && "speechSynthesis" in window) {
+                    window.speechSynthesis.cancel();
+                  }
+                  setMode("shadowing");
+                  setCurrentTurn(0);
+                  setShowKorean(false);
+                }}
                 type="button"
               >
                 <span className="text-[17px]">🗣️</span>
                 <span>따라하기</span>
               </button>
               <button
-                className="py-3.5 px-1 rounded-2xl bg-[#004ac6] hover:bg-[#2563eb] text-white font-label-md text-xs font-bold whitespace-nowrap shadow-md shadow-[#004ac6]/25 active:scale-95 transition cursor-pointer flex flex-col items-center justify-center gap-1"
+                className={`py-3.5 px-1 rounded-2xl ${
+                  mode === "roleplay" ? "bg-[#004ac6] text-white shadow-md shadow-[#004ac6]/25" : "bg-[#eaedff] hover:bg-[#e2e7ff]/80 text-[#131b2e]"
+                } font-label-md text-xs font-bold whitespace-nowrap active:scale-95 transition cursor-pointer flex flex-col items-center justify-center gap-1 shadow-sm`}
+                onClick={() => {
+                  clearTimer();
+                  teardownSTT();
+                  if (typeof window !== "undefined" && "speechSynthesis" in window) {
+                    window.speechSynthesis.cancel();
+                  }
+                  setMode("roleplay");
+                  setCurrentTurn(0);
+                  setShowKorean(false);
+                }}
                 type="button"
               >
                 <span className="text-[17px]">🎭</span>
                 <span>롤플레이</span>
               </button>
               <button
-                className="py-3.5 px-1 rounded-2xl bg-[#eaedff] hover:bg-[#e2e7ff]/80 text-[#131b2e] font-label-md text-xs font-bold whitespace-nowrap active:scale-95 transition cursor-pointer flex flex-col items-center justify-center gap-1 shadow-sm"
-                onClick={handleNextTurn}
+                className={`py-3.5 px-1 rounded-2xl ${
+                  mode === "role_switch" ? "bg-[#004ac6] text-white shadow-md shadow-[#004ac6]/25" : "bg-[#eaedff] hover:bg-[#e2e7ff]/80 text-[#131b2e]"
+                } font-label-md text-xs font-bold whitespace-nowrap active:scale-95 transition cursor-pointer flex flex-col items-center justify-center gap-1 shadow-sm`}
+                onClick={() => {
+                  clearTimer();
+                  teardownSTT();
+                  if (typeof window !== "undefined" && "speechSynthesis" in window) {
+                    window.speechSynthesis.cancel();
+                  }
+                  setMode("role_switch");
+                  setCurrentTurn(0);
+                  setShowKorean(false);
+                }}
                 type="button"
               >
                 <span className="text-[17px]">🔄</span>
@@ -469,17 +887,10 @@ function TalkyRoomContent() {
               <div className="flex flex-col gap-2.5 w-full pt-2">
                 <button
                   className="w-full py-3 rounded-2xl bg-[#004ac6] text-white font-label-md text-sm font-bold shadow-md hover:bg-[#2563eb] transition cursor-pointer"
-                  onClick={() => router.push(`/talky-sheet?id=${script.id}`)}
+                  onClick={() => setIsFeedbackModalOpen(false)}
                   type="button"
                 >
-                  스크립트 시트로 돌아가기
-                </button>
-                <button
-                  className="w-full py-3 rounded-2xl bg-[#eaedff] text-[#131b2e] font-label-md text-sm font-semibold hover:bg-[#e2e7ff] transition cursor-pointer"
-                  onClick={() => router.push("/")}
-                  type="button"
-                >
-                  메인 화면으로 가기
+                  닫기
                 </button>
               </div>
             </div>
