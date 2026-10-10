@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 import Image from "next/image";
 import NicknameModal from "@/components/NicknameModal";
@@ -19,7 +19,7 @@ export default function Home() {
   const router = useRouter();
 
   // State with localStorage and Hydration Mismatch prevention
-  const [nickname, setNickname] = useState("지은");
+  const [nickname, setNickname] = useState("사용자");
   const [streakCount, setStreakCount] = useState(1);
   const [streakGoal, setStreakGoal] = useState(7);
   const [todaySentences, setTodaySentences] = useState(0);
@@ -32,6 +32,60 @@ export default function Home() {
   const [toastVisible, setToastVisible] = useState(false);
   const [activeTab, setActiveTab] = useState<"전체" | "생활영어" | "비즈니스" | "여행/식당">("전체");
   const [generatedScriptId, setGeneratedScriptId] = useState<string | null>(null);
+
+  const [scriptToDelete, setScriptToDelete] = useState<ScriptListItem | null>(null);
+  const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
+  const [deleteToastVisible, setDeleteToastVisible] = useState(false);
+  const longPressTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const isLongPressRef = useRef(false);
+
+  const startLongPress = (item: ScriptListItem) => {
+    isLongPressRef.current = false;
+    longPressTimerRef.current = setTimeout(() => {
+      isLongPressRef.current = true;
+      setScriptToDelete(item);
+      setIsDeleteModalOpen(true);
+    }, 600);
+  };
+
+  const cancelLongPress = () => {
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+  };
+
+  const handleScriptClick = (item: ScriptListItem) => {
+    if (isLongPressRef.current) {
+      isLongPressRef.current = false;
+      return;
+    }
+    router.push(`/talky-room?id=${item.id}`);
+  };
+
+  const confirmDeleteScript = () => {
+    if (!scriptToDelete) return;
+    try {
+      localStorage.removeItem(`talkycat_script_${scriptToDelete.id}`);
+      const saved = localStorage.getItem("talkycat_scripts");
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          const updated = parsed.filter((s: ScriptListItem) => s.id !== scriptToDelete.id);
+          localStorage.setItem("talkycat_scripts", JSON.stringify(updated));
+          setScripts(updated);
+        }
+      }
+    } catch (e) {
+      console.error("Failed to delete script", e);
+    }
+    setIsDeleteModalOpen(false);
+    setScriptToDelete(null);
+    setDeleteToastVisible(true);
+    setTimeout(() => {
+      setDeleteToastVisible(false);
+    }, 2500);
+  };
 
   const checkScripts = useCallback(() => {
     try {
@@ -103,6 +157,9 @@ export default function Home() {
       const data = await res.json();
 
       if (data.success && data.script) {
+        if (data.fallback) {
+          console.error("[TalkyCat] Gemini API call failed or unavailable. Using mock fallback script. Exact Error:", data.error || "Unknown error");
+        }
         const newScript: GeneratedScript = data.script;
         setGeneratedScriptId(newScript.id);
 
@@ -123,10 +180,13 @@ export default function Home() {
         
         setScripts(updated);
       } else {
-        throw new Error("Failed to generate script");
+        const errorDetail = data.error || "Failed to generate script";
+        console.error("[TalkyCat] API returned failure response:", errorDetail);
+        throw new Error(errorDetail);
       }
-    } catch (err) {
-      console.error("Generation API error:", err);
+    } catch (err: any) {
+      const errMessage = err instanceof Error ? err.message : String(err);
+      console.error("[TalkyCat] Generation API error / Fallback triggered. Exact Error:", errMessage);
       const fallbackId = Date.now().toString();
       const fallbackScript: GeneratedScript = {
         id: fallbackId,
@@ -301,7 +361,7 @@ export default function Home() {
 
             {/* Script Archive List Section */}
             <section className="flex flex-col gap-4 w-full">
-              <div className="flex items-center">
+              <div className="flex flex-col gap-0.5">
                 <div className="flex items-center gap-1.5">
                   <span className="material-symbols-outlined text-[20px] text-[#004ac6]">
                     folder_open
@@ -310,6 +370,9 @@ export default function Home() {
                     내 스크립트 보관함
                   </h3>
                 </div>
+                <p className="font-body-sm text-[11px] text-[#737686] ml-6">
+                  💡 원하시는 스크립트 행을 길게 누르면 삭제할 수 있어요! 🐾
+                </p>
               </div>
 
               {/* Filter Pills */}
@@ -379,8 +442,15 @@ export default function Home() {
                     return (
                       <article
                         key={item.id}
-                        className="bg-white rounded-2xl p-3.5 shadow-sm border border-[#eaedff]/60 hover:border-[#dbe1ff] transition-all flex items-center justify-between gap-3 active:scale-[0.99] cursor-pointer"
-                        onClick={() => router.push(`/talky-room?id=${item.id}`)}
+                        className="bg-white rounded-2xl p-3.5 shadow-sm border border-[#eaedff]/60 hover:border-[#dbe1ff] transition-all flex items-center justify-between gap-3 active:scale-95 transition-transform cursor-pointer select-none"
+                        onMouseDown={() => startLongPress(item)}
+                        onMouseUp={cancelLongPress}
+                        onMouseLeave={cancelLongPress}
+                        onTouchStart={() => startLongPress(item)}
+                        onTouchEnd={cancelLongPress}
+                        onTouchMove={cancelLongPress}
+                        onClick={() => handleScriptClick(item)}
+                        title="길게 누르거나 우측 삭제 버튼으로 삭제 가능"
                       >
                         <div className="flex flex-col gap-1 min-w-0 flex-1">
                           <div className="flex items-center gap-2">
@@ -400,19 +470,35 @@ export default function Home() {
                             {item.title}
                           </h4>
                         </div>
-                        <button
-                          className="w-9 h-9 rounded-full bg-[#dbe1ff]/50 text-[#004ac6] flex items-center justify-center flex-shrink-0 hover:bg-[#004ac6] hover:text-white transition-colors shadow-sm cursor-pointer"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            router.push(`/talky-room?id=${item.id}`);
-                          }}
-                          type="button"
-                          title="토키룸으로 연습 시작"
-                        >
-                          <span className="material-symbols-outlined text-[20px]">
-                            play_arrow
-                          </span>
-                        </button>
+                        <div className="flex items-center gap-1.5 flex-shrink-0">
+                          <button
+                            className="w-8 h-8 rounded-full bg-[#ffdad6]/70 text-[#93000a] flex items-center justify-center hover:bg-[#ba1a1a] hover:text-white transition-colors shadow-sm cursor-pointer"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setScriptToDelete(item);
+                              setIsDeleteModalOpen(true);
+                            }}
+                            type="button"
+                            title="스크립트 삭제"
+                          >
+                            <span className="material-symbols-outlined text-[17px]">
+                              delete_outline
+                            </span>
+                          </button>
+                          <button
+                            className="w-9 h-9 rounded-full bg-[#dbe1ff]/50 text-[#004ac6] flex items-center justify-center hover:bg-[#004ac6] hover:text-white transition-colors shadow-sm cursor-pointer"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              router.push(`/talky-room?id=${item.id}`);
+                            }}
+                            type="button"
+                            title="토키룸으로 연습 시작"
+                          >
+                            <span className="material-symbols-outlined text-[20px]">
+                              play_arrow
+                            </span>
+                          </button>
+                        </div>
                       </article>
                     );
                   })
@@ -426,7 +512,7 @@ export default function Home() {
         <div className="fixed bottom-0 left-0 right-0 z-40 bg-[#faf8ff]/95 backdrop-blur-md border-t border-[#e2e7ff]/60 p-4 pb-safe flex items-center justify-center">
           <div className="w-full max-w-[480px] flex items-center gap-3">
             <button
-              className="flex-1 max-w-[120px] h-12 bg-[#ffddb8] text-[#2a1700] font-label-md text-[13px] rounded-2xl flex items-center justify-center gap-1.5 shadow-sm active:scale-95 transition-all cursor-pointer"
+              className="flex-1 h-14 bg-[#ffddb8] text-[#2a1700] font-label-md text-xs sm:text-sm font-bold rounded-2xl flex items-center justify-center gap-1.5 shadow-sm active:scale-95 transition-all cursor-pointer px-2"
               onClick={handleFreeTalk}
               type="button"
             >
@@ -436,14 +522,14 @@ export default function Home() {
               <span>프리토킹</span>
             </button>
             <button
-              className="flex-[2.5] h-12 bg-[#2563eb] text-white font-label-lg text-[15px] rounded-2xl shadow-lg shadow-[#2563eb]/25 flex items-center justify-center gap-2 active:scale-95 transition-all cursor-pointer hover:bg-[#1d4ed8]"
+              className="flex-1 h-14 bg-[#2563eb] text-white font-label-md text-xs sm:text-sm font-bold rounded-2xl shadow-lg shadow-[#2563eb]/25 flex items-center justify-center gap-1.5 active:scale-95 transition-all cursor-pointer hover:bg-[#1d4ed8] px-2 text-center leading-tight"
               onClick={handleStartGeneration}
               type="button"
             >
-              <span className="material-symbols-outlined text-[20px]">
+              <span className="material-symbols-outlined text-[18px]">
                 auto_awesome
               </span>
-              <span>새 스크립트 만들기</span>
+              <span>새 스크립트<br className="block sm:hidden" /> 만들기</span>
             </button>
           </div>
         </div>
@@ -462,7 +548,60 @@ export default function Home() {
           <span>스크립트 생성 완료! 토키룸으로 이동합니다 🚀</span>
         </div>
 
+        {/* Deletion Toast Notification */}
+        <div
+          className={`fixed top-20 left-1/2 -translate-x-1/2 z-50 bg-[#283044]/90 backdrop-blur-md text-white px-4 py-2.5 rounded-full shadow-lg text-xs font-semibold flex items-center gap-2 transition-all duration-300 ${
+            deleteToastVisible
+              ? "opacity-100 translate-y-0"
+              : "opacity-0 -translate-y-2 pointer-events-none"
+          }`}
+        >
+          <span className="material-symbols-outlined text-[#ffdad6] text-[18px]">
+            delete_outline
+          </span>
+          <span>스크립트가 삭제되었습니다 🗑️</span>
+        </div>
+
         {/* Modals */}
+        {/* Delete Confirmation Modal */}
+        {isDeleteModalOpen && scriptToDelete && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-in fade-in">
+            <div className="w-full max-w-[360px] bg-white rounded-3xl shadow-2xl p-6 flex flex-col items-center text-center gap-4 animate-in zoom-in-95">
+              <div className="w-16 h-16 rounded-full bg-[#ffdad6] flex items-center justify-center text-[#93000a] text-3xl shadow-inner">
+                <span className="material-symbols-outlined text-[32px]">delete_outline</span>
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <h3 className="font-headline-md text-base sm:text-lg font-bold text-[#131b2e]">
+                  이 스크립트를 보관함에서 삭제할까요냥? 🐾
+                </h3>
+                <p className="font-body-sm text-[11px] text-[#ba1a1a] font-medium">
+                  ⚠️ 스크립트 및 관련 학습 정보가 모두 영구 삭제됩니다.
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2.5 w-full pt-2">
+                <button
+                  className="flex-1 py-3 rounded-2xl bg-[#eaedff] text-[#434655] font-label-md text-xs font-bold hover:bg-[#e2e7ff] transition cursor-pointer"
+                  onClick={() => {
+                    setIsDeleteModalOpen(false);
+                    setScriptToDelete(null);
+                  }}
+                  type="button"
+                >
+                  취소
+                </button>
+                <button
+                  className="flex-1 py-3 rounded-2xl bg-[#ba1a1a] text-white font-label-md text-xs font-bold shadow-md hover:bg-[#93000a] transition cursor-pointer"
+                  onClick={confirmDeleteScript}
+                  type="button"
+                >
+                  삭제하기
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         <NicknameModal
           isOpen={isNicknameModalOpen}
           initialNickname={nickname === "사용자" ? "" : nickname}

@@ -141,8 +141,14 @@ export async function POST(request: Request) {
     const apiKey = process.env.GEMINI_API_KEY;
 
     if (!apiKey) {
-      console.warn("GEMINI_API_KEY is not set. Using mock fallback script.");
-      return NextResponse.json({ success: true, script: getFallbackScript() });
+      const errorMsg = "GEMINI_API_KEY environment variable is not set.";
+      console.error("[Gemini API Error] " + errorMsg + " Falling back to mock script.");
+      return NextResponse.json({ 
+        success: true, 
+        script: getFallbackScript(), 
+        fallback: true, 
+        error: errorMsg 
+      });
     }
 
     const ai = new GoogleGenAI({ apiKey });
@@ -214,7 +220,7 @@ Return JSON with this exact structure:
 `;
 
     const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
+      model: "gemini-3.5-flash-lite",
       contents: prompt,
       config: {
         systemInstruction: systemInstruction,
@@ -266,8 +272,19 @@ Return JSON with this exact structure:
     };
 
     return NextResponse.json({ success: true, script });
-  } catch (error) {
-    console.error("Error in /api/generate-script:", error);
-    return NextResponse.json({ success: true, script: getFallbackScript(), fallback: true });
+  } catch (error: any) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    const errorStack = error instanceof Error ? error.stack : undefined;
+    console.error("[Gemini API Error] Failed to generate script from Gemini API. Falling back to mock script.");
+    console.error("Error details:", errorMsg);
+    if (errorStack) {
+      console.error("Stack trace:", errorStack);
+    }
+    return NextResponse.json({ 
+      success: true, 
+      script: getFallbackScript(), 
+      fallback: true, 
+      error: errorMsg 
+    });
   }
 }

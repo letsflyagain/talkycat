@@ -173,10 +173,10 @@ function TalkyRoomContent() {
       setIsListening(false);
       setStatusText("완벽하다냥! 🎉");
 
-      // Sentence transition buffer: 2 seconds delay before moving to next step
+      // Sentence transition buffer: 1.5 seconds delay before moving to next step
       timerRef.current = setTimeout(() => {
         handleNextTurn();
-      }, 2000);
+      }, 1500);
     }
   }, [script, currentTurn, handleNextTurn, teardownSTT]);
 
@@ -396,11 +396,11 @@ function TalkyRoomContent() {
 
   const handleFullNextTurn = useCallback((finishedTurn: number, dialogueList: DialogueLine[]) => {
     if (finishedTurn < dialogueList.length - 1) {
-      setStatusText("2초 후 다음 문장으로 이동합니다... 🐾");
+      setStatusText("1.5초 후 다음 문장으로 이동합니다... 🐾");
       timerRef.current = setTimeout(() => {
         setCurrentTurn(finishedTurn + 1);
         setShowKorean(false);
-      }, 2000);
+      }, 1500);
     } else {
       setStatusText("미션 완료! 🐾");
       setIsFeedbackModalOpen(true);
@@ -440,20 +440,20 @@ function TalkyRoomContent() {
 
     if (mode === "listen_all") {
       if (currentTurn === 0) {
-        setStatusText("2초 후 전체듣기가 시작됩니다... 🐾");
+        setStatusText("1.5초 후 전체듣기가 시작됩니다... 🐾");
         timerRef.current = setTimeout(() => {
           speakCurrentLine(dialogueList[0].english, () => {
             handleFullNextTurn(0, dialogueList);
           });
-        }, 2000);
+        }, 1500);
       } else if (currentTurn < dialogueList.length) {
         speakCurrentLine(dialogueList[currentTurn].english, () => {
           handleFullNextTurn(currentTurn, dialogueList);
         });
       }
     } else {
-      // Speaking modes with initial 2s wait and anti-echo buffer (900ms)
-      setStatusText("2초 후 발화 준비... 🐾");
+      // Speaking modes with initial 1.5s wait and anti-echo buffer (900ms)
+      setStatusText("1.5초 후 발화 준비... 🐾");
       timerRef.current = setTimeout(() => {
         speakCurrentLine(dialogueList[currentTurn].english, () => {
           setStatusText("마이크 활성화 대기 중... 🎙️");
@@ -461,7 +461,7 @@ function TalkyRoomContent() {
             startListening();
           }, 900);
         });
-      }, 2000);
+      }, 1500);
     }
   }, [currentTurn, script, mode, speakCurrentLine, handleFullNextTurn, startListening, teardownSTT]);
 
@@ -549,76 +549,76 @@ function TalkyRoomContent() {
         </header>
 
         {/* Main Content (Scrollable Flow including title, avatar, and sentence card) */}
-        <main className="flex-1 flex flex-col relative w-full pt-20 pb-8 bg-[#faf8ff]">
-          <div className="flex flex-col w-full relative select-none gap-4 px-4">
+        <main className="flex-1 flex flex-col relative w-full pt-16 pb-28 bg-[#faf8ff]">
+          <div className="flex flex-col w-full relative select-none gap-3 px-3">
 
             {/* Topic Bar */}
-            <div className="pt-2 pb-1 flex items-center justify-between gap-2">
+            <div className="pt-1 pb-0.5 flex items-center justify-between gap-2">
               <div className="flex items-center gap-2 min-w-0">
-                <span className="inline-flex items-center justify-center w-8 h-8 rounded-full bg-[#fea619]/20 text-[#855300]">
-                  <span className="material-symbols-outlined text-[18px]">storefront</span>
+                <span className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-[#fea619]/20 text-[#855300]">
+                  <span className="material-symbols-outlined text-[16px]">storefront</span>
                 </span>
                 <div className="min-w-0">
                   <div className="flex items-center gap-1.5">
-                    <p className="font-headline-sm text-sm text-[#131b2e] truncate font-bold">{script.title}</p>
+                    <p className="font-headline-sm text-xs sm:text-sm text-[#131b2e] truncate font-bold">{script.title}</p>
                     <span className="px-2 py-0.5 rounded-full bg-[#e2e7ff] text-[#004ac6] font-label-sm text-[10px] shrink-0 font-bold">
                       {script.category}
                     </span>
                   </div>
-                  <p className="font-body-sm text-[11px] text-[#434655] truncate">
-                    {mode === "listen_all" ? "전체듣기 모드 (핸즈프리 감상)" : "발화 훈련 모드 (정밀 음성 인식 & 오디오 튜닝)"}
+                  <p className="font-body-sm text-[10px] text-[#434655] truncate">
+                    {mode === "listen_all" ? "전체듣기 모드 (핸즈프리)" : "발화 훈련 모드 (정밀 음성 인식)"}
                   </p>
                 </div>
               </div>
             </div>
 
             {/* Central TalkyCat Avatar & Live Voice Aura Stage */}
-            <div className="flex flex-col items-center justify-center py-2 relative">
-              <div className="relative flex items-center justify-center w-44 h-44 my-2">
+            <div className="flex flex-col items-center justify-center py-1 relative">
+              <div className="relative flex items-center justify-center w-32 h-32 sm:w-36 sm:h-36 my-1">
                 <div className={`absolute inset-0 rounded-full bg-[#004ac6]/15 ${speaking || isListening ? "animate-ping" : ""} opacity-75`} />
-                <div className="absolute -inset-3 rounded-full bg-gradient-to-tr from-[#dbe1ff]/50 via-[#fea619]/20 to-[#dae2fd]/40 blur-lg" />
+                <div className="absolute -inset-2 rounded-full bg-gradient-to-tr from-[#dbe1ff]/50 via-[#fea619]/20 to-[#dae2fd]/40 blur-md" />
                 
-                <div className="relative w-40 h-40 rounded-full bg-white shadow-lg flex items-center justify-center overflow-hidden p-2.5 border-3 border-[#dbe1ff]">
-                  <Image src="/talkycat-m.png" alt="TalkyCat Avatar" width={160} height={160} className="w-full h-full object-contain p-1" priority />
+                <div className="relative w-28 h-28 sm:w-32 sm:h-32 rounded-full bg-white shadow-md flex items-center justify-center overflow-hidden p-2 border-2 border-[#dbe1ff]">
+                  <Image src="/talkycat-m.png" alt="TalkyCat Avatar" width={140} height={140} className="w-full h-full object-contain p-0.5" priority />
                 </div>
 
-                <div className="absolute -bottom-2.5 flex items-center gap-1 px-3.5 py-1.5 rounded-full bg-[#004ac6] text-white shadow-md">
-                  <span className={`inline-block w-2 h-2 rounded-full bg-[#6ffbbe] ${speaking || isListening ? "animate-pulse" : ""}`} />
-                  <span className="font-label-sm text-xs tracking-wide font-bold">
+                <div className="absolute -bottom-2 flex items-center gap-1 px-3 py-1 rounded-full bg-[#004ac6] text-white shadow-sm">
+                  <span className={`inline-block w-1.5 h-1.5 rounded-full bg-[#6ffbbe] ${speaking || isListening ? "animate-pulse" : ""}`} />
+                  <span className="font-label-sm text-[11px] tracking-wide font-bold">
                     {speaking ? "토키캣 말하는 중 🐾" : isListening ? "듣고 있어요 🎙️" : "대화 준비 중 🐾"}
                   </span>
                 </div>
               </div>
 
-              <div className="flex flex-col items-center justify-center gap-1 w-full mt-2">
-                <div className="flex items-center justify-center gap-1.5 h-7 px-4 py-1.5 rounded-full bg-[#f2f3ff] shadow-sm">
-                  <div className="w-1 rounded-full bg-[#004ac6] animate-[pulse_0.7s_infinite] h-3" />
-                  <div className="w-1 rounded-full bg-[#004ac6] animate-[pulse_0.5s_infinite] h-5" />
+              <div className="flex flex-col items-center justify-center gap-1 w-full mt-1.5">
+                <div className="flex items-center justify-center gap-1.5 h-6 px-3 py-1 rounded-full bg-[#f2f3ff] shadow-sm">
+                  <div className="w-1 rounded-full bg-[#004ac6] animate-[pulse_0.7s_infinite] h-2.5" />
+                  <div className="w-1 rounded-full bg-[#004ac6] animate-[pulse_0.5s_infinite] h-4" />
                   <div className="w-1 rounded-full bg-[#004ac6] animate-[pulse_0.9s_infinite] h-2" />
-                  <div className="w-1 rounded-full bg-[#2563eb] animate-[pulse_0.4s_infinite] h-6" />
-                  <div className="w-1 rounded-full bg-[#004ac6] animate-[pulse_0.6s_infinite] h-4" />
-                  <div className="w-1 rounded-full bg-[#006242] animate-[pulse_0.5s_infinite] h-4" />
-                  <span className="font-label-sm text-xs text-[#434655] ml-1.5 font-medium">
+                  <div className="w-1 rounded-full bg-[#2563eb] animate-[pulse_0.4s_infinite] h-5" />
+                  <div className="w-1 rounded-full bg-[#004ac6] animate-[pulse_0.6s_infinite] h-3.5" />
+                  <div className="w-1 rounded-full bg-[#006242] animate-[pulse_0.5s_infinite] h-3.5" />
+                  <span className="font-label-sm text-[11px] text-[#434655] ml-1 font-medium">
                     {statusText}
                   </span>
                 </div>
 
                 {sttStatus === "success" && (
-                  <div className="mt-2 px-3 py-1.5 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-bold flex items-center gap-1.5 animate-in fade-in shadow-sm">
-                    <span className="material-symbols-outlined text-[16px]">check_circle</span>
-                    <span>완벽하다냥! 🎉 다음 단계로 넘어간다냥! 🌟</span>
+                  <div className="mt-1 px-2.5 py-1 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 text-[11px] font-bold flex items-center gap-1 animate-in fade-in shadow-sm">
+                    <span className="material-symbols-outlined text-[14px]">check_circle</span>
+                    <span>완벽하다냥! 🎉 다음 단계로! 🌟</span>
                   </div>
                 )}
                 {recognizedText && (
-                  <p className="text-[11px] text-[#434655] mt-1 italic text-center font-medium">
+                  <p className="text-[10px] text-[#434655] mt-0.5 italic text-center font-medium">
                     인식된 음성: &quot;{recognizedText}&quot;
                   </p>
                 )}
               </div>
 
-              <div className="flex items-center gap-1.5 mt-3">
+              <div className="flex items-center gap-1.5 mt-2">
                 <button
-                  className={`px-3.5 py-1 rounded-full text-xs font-bold shadow-sm transition active:scale-95 cursor-pointer ${
+                  className={`px-3 py-0.5 rounded-full text-[11px] font-bold shadow-sm transition active:scale-95 cursor-pointer ${
                     speed === 1.0 ? "bg-[#004ac6] text-white" : "bg-[#eaedff] text-[#434655] hover:bg-[#e2e7ff]"
                   }`}
                   onClick={() => setSpeed(1.0)}
@@ -627,7 +627,7 @@ function TalkyRoomContent() {
                   1.0x 표준속도
                 </button>
                 <button
-                  className={`px-3.5 py-1 rounded-full text-xs font-bold shadow-sm transition active:scale-95 cursor-pointer ${
+                  className={`px-3 py-0.5 rounded-full text-[11px] font-bold shadow-sm transition active:scale-95 cursor-pointer ${
                     speed === 0.8 ? "bg-[#004ac6] text-white" : "bg-[#eaedff] text-[#434655] hover:bg-[#e2e7ff]"
                   }`}
                   onClick={() => setSpeed(0.8)}
@@ -640,71 +640,71 @@ function TalkyRoomContent() {
 
             {/* Main Focus Card: Current Sentence Target */}
             <div className="w-full">
-              <div className="relative w-full rounded-2xl bg-white shadow-md p-4 flex flex-col gap-3 overflow-hidden border border-[#eaedff]">
+              <div className="relative w-full rounded-2xl bg-white shadow-md p-3.5 flex flex-col gap-2.5 overflow-hidden border border-[#eaedff]">
                 
                 <div className="flex items-center justify-between w-full">
                   <div className="flex items-center gap-2">
-                    <span className={`px-2.5 py-1 rounded-full text-xs font-bold flex items-center gap-1 ${
+                    <span className={`px-2 py-0.5 rounded-full text-[11px] font-bold flex items-center gap-1 ${
                       isCat ? "bg-[#dbe1ff] text-[#00174b]" : "bg-[#6ffbbe]/40 text-[#002113]"
                     }`}>
-                      <span className="material-symbols-outlined text-[15px]">
+                      <span className="material-symbols-outlined text-[14px]">
                         {isCat ? "smart_toy" : "person"}
                       </span>
                       {currentLine.speakerName || (isCat ? "토키캣" : "나")}
                     </span>
-                    <span className="font-label-sm text-xs text-[#737686] font-semibold">
+                    <span className="font-label-sm text-[11px] text-[#737686] font-semibold">
                       문장 {currentTurn + 1} / {dialogueList.length}
                     </span>
                   </div>
                   <button
                     aria-label="이 문장 다시 듣기"
-                    className="w-10 h-10 rounded-full bg-[#dbe1ff] flex items-center justify-center text-[#004ac6] hover:bg-[#004ac6] hover:text-white active:scale-90 transition shadow-sm cursor-pointer"
+                    className="w-8 h-8 rounded-full bg-[#dbe1ff] flex items-center justify-center text-[#004ac6] hover:bg-[#004ac6] hover:text-white active:scale-90 transition shadow-sm cursor-pointer"
                     onClick={handleManualReplay}
                     type="button"
                   >
-                    <span className="material-symbols-outlined text-[22px]">volume_up</span>
+                    <span className="material-symbols-outlined text-[18px]">volume_up</span>
                   </button>
                 </div>
 
-                <div className="w-full bg-[#eaedff] h-2 rounded-full overflow-hidden flex items-center p-0.5">
+                <div className="w-full bg-[#eaedff] h-1.5 rounded-full overflow-hidden flex items-center p-0.5">
                   <div
                     className="bg-[#004ac6] h-full rounded-full transition-all duration-300"
                     style={{ width: `${progressPercent}%` }}
                   />
                 </div>
 
-                <div className="pt-1">
-                  <h2 className="font-headline-md text-lg text-[#131b2e] font-bold leading-snug">
+                <div className="pt-0.5">
+                  <h2 className="font-headline-md text-base sm:text-lg text-[#131b2e] font-bold leading-snug">
                     &quot;{currentLine.english}&quot;
                   </h2>
                 </div>
 
-                <div className="pt-1 border-t border-[#eaedff]/60 pt-2.5">
+                <div className="pt-1 border-t border-[#eaedff]/60 pt-2">
                   <div className="flex items-center justify-between">
-                    <span className="font-label-sm text-xs text-[#737686] font-medium">한국어 해석</span>
+                    <span className="font-label-sm text-[11px] text-[#737686] font-medium">한국어 해석</span>
                     <button
-                      className="font-label-sm text-xs text-[#004ac6] hover:underline flex items-center gap-0.5 font-bold cursor-pointer"
+                      className="font-label-sm text-[11px] text-[#004ac6] hover:underline flex items-center gap-0.5 font-bold cursor-pointer"
                       onClick={() => setShowKorean(!showKorean)}
                       type="button"
                     >
                       <span>{showKorean ? "해석 숨기기" : "해석 보기"}</span>
-                      <span className="material-symbols-outlined text-[16px]">
+                      <span className="material-symbols-outlined text-[14px]">
                         {showKorean ? "visibility_off" : "visibility"}
                       </span>
                     </button>
                   </div>
                   {showKorean && (
-                    <p className="font-body-md text-sm text-[#434655] mt-1.5 font-medium animate-in fade-in">
+                    <p className="font-body-md text-xs sm:text-sm text-[#434655] mt-1 font-medium animate-in fade-in">
                       &quot;{currentLine.korean}&quot;
                     </p>
                   )}
 
                   {nextLine && (
-                    <div className="mt-3 p-3 rounded-xl bg-[#004ac6]/10 flex items-center gap-2">
-                      <span className="material-symbols-outlined text-[#004ac6] text-[18px] shrink-0">
+                    <div className="mt-2.5 p-2.5 rounded-xl bg-[#004ac6]/10 flex items-center gap-2">
+                      <span className="material-symbols-outlined text-[#004ac6] text-[16px] shrink-0">
                         chat_bubble_outline
                       </span>
-                      <div className="min-w-0 text-xs font-medium">
+                      <div className="min-w-0 text-[11px] font-medium">
                         <span className="text-[#004ac6] font-bold">다음 대사: </span>
                         <span className="text-[#131b2e] truncate">&quot;{nextLine.english}&quot;</span>
                       </div>
@@ -719,41 +719,41 @@ function TalkyRoomContent() {
         </main>
 
         {/* Fixed Bottom Deck: Combined Control Deck (3 buttons) & Action Buttons (4 buttons) in a single frame */}
-        <div className="fixed bottom-0 left-0 right-0 z-40 bg-[#faf8ff]/95 backdrop-blur-md border-t border-[#e2e7ff]/60 p-3 pb-safe flex items-center justify-center shadow-lg">
-          <div className="w-full max-w-[480px] flex flex-col gap-2.5 bg-white/80 p-3 rounded-2xl border border-[#eaedff] shadow-sm">
+        <div className="fixed bottom-0 left-0 right-0 z-40 bg-[#faf8ff]/95 backdrop-blur-md border-t border-[#e2e7ff]/60 p-2 pb-safe flex items-center justify-center shadow-lg">
+          <div className="w-full max-w-[480px] flex flex-col gap-2 bg-white/90 p-2.5 rounded-2xl border border-[#eaedff] shadow-sm">
             {/* Control Deck (3 buttons: 다시듣기, 마이크터치/제어, 종료) */}
-            <div className="w-full rounded-2xl bg-[#f2f3ff] p-3 shadow-sm flex items-center justify-around border border-[#eaedff]">
+            <div className="w-full rounded-xl bg-[#f2f3ff] p-2 shadow-sm flex items-center justify-around border border-[#eaedff]">
               <div className="flex flex-col items-center">
                 <button
-                  className="w-12 h-12 rounded-full bg-[#dae2fd] text-[#131b2e] flex items-center justify-center hover:bg-[#c3c6d7] active:scale-90 transition shadow-sm cursor-pointer"
+                  className="w-10 h-10 rounded-full bg-[#dae2fd] text-[#131b2e] flex items-center justify-center hover:bg-[#c3c6d7] active:scale-90 transition shadow-sm cursor-pointer"
                   onClick={handleManualReplay}
                   type="button"
                   aria-label="다시듣기"
                 >
-                  <span className="material-symbols-outlined text-[24px]">replay</span>
+                  <span className="material-symbols-outlined text-[20px]">replay</span>
                 </button>
-                <span className="font-label-sm text-xs text-[#434655] mt-1.5 font-bold">다시듣기</span>
+                <span className="font-label-sm text-[10px] text-[#434655] mt-1 font-bold">다시듣기</span>
               </div>
 
               <div className="flex flex-col items-center">
                 <button
-                  className={`w-14 h-14 rounded-full ${
+                  className={`w-12 h-12 rounded-full ${
                     !isSpeakingMode
                       ? "bg-slate-300 cursor-not-allowed opacity-50"
                       : isListening
-                      ? "bg-emerald-600 animate-pulse shadow-lg shadow-emerald-600/30"
-                      : "bg-[#004ac6] shadow-lg shadow-[#004ac6]/30"
+                      ? "bg-emerald-600 animate-pulse shadow-md shadow-emerald-600/30"
+                      : "bg-[#004ac6] shadow-md shadow-[#004ac6]/30"
                   } text-white flex items-center justify-center active:scale-95 transition cursor-pointer`}
                   onClick={handleMicClick}
                   type="button"
                   aria-label="음성 인식 제어"
                   disabled={!isSpeakingMode}
                 >
-                  <span className="material-symbols-outlined text-[26px]">
+                  <span className="material-symbols-outlined text-[22px]">
                     {!isSpeakingMode ? "mic_off" : isListening ? "mic" : "mic"}
                   </span>
                 </button>
-                <span className="font-label-sm text-xs text-[#004ac6] font-bold mt-1" id="mic-hint-text">
+                <span className="font-label-sm text-[10px] text-[#004ac6] font-bold mt-1" id="mic-hint-text">
                   {!isSpeakingMode
                     ? "마이크 비활성화됨"
                     : isListening
@@ -764,23 +764,23 @@ function TalkyRoomContent() {
 
               <div className="flex flex-col items-center">
                 <button
-                  className="w-12 h-12 rounded-full bg-[#ffdad6] text-[#93000a] flex items-center justify-center hover:bg-[#ba1a1a] hover:text-white active:scale-90 transition shadow-sm cursor-pointer"
+                  className="w-10 h-10 rounded-full bg-[#ffdad6] text-[#93000a] flex items-center justify-center hover:bg-[#ba1a1a] hover:text-white active:scale-90 transition shadow-sm cursor-pointer"
                   onClick={() => router.push("/")}
                   type="button"
                   aria-label="학습 종료"
                 >
-                  <span className="material-symbols-outlined text-[22px]">logout</span>
+                  <span className="material-symbols-outlined text-[18px]">logout</span>
                 </button>
-                <span className="font-label-sm text-xs text-[#93000a] mt-1.5 font-bold">종료</span>
+                <span className="font-label-sm text-[10px] text-[#93000a] mt-1 font-bold">종료</span>
               </div>
             </div>
 
             {/* Action Buttons (4 buttons: 전체듣기, 따라하기, 롤플레이, 역할교대) */}
-            <div className="w-full grid grid-cols-4 gap-2">
+            <div className="w-full grid grid-cols-4 gap-1.5">
               <button
-                className={`py-3.5 px-1 rounded-2xl ${
+                className={`py-2.5 px-1 rounded-xl ${
                   mode === "listen_all" ? "bg-[#004ac6] text-white shadow-md shadow-[#004ac6]/25" : "bg-[#eaedff] hover:bg-[#e2e7ff]/80 text-[#131b2e]"
-                } font-label-md text-xs font-bold whitespace-nowrap active:scale-95 transition cursor-pointer flex flex-col items-center justify-center gap-1 shadow-sm`}
+                } font-label-md text-[11px] font-bold whitespace-nowrap active:scale-95 transition cursor-pointer flex flex-col items-center justify-center gap-0.5 shadow-sm`}
                 onClick={() => {
                   clearTimer();
                   teardownSTT();
@@ -793,13 +793,13 @@ function TalkyRoomContent() {
                 }}
                 type="button"
               >
-                <span className="text-[17px]">🎧</span>
+                <span className="text-[15px]">🎧</span>
                 <span>전체듣기</span>
               </button>
               <button
-                className={`py-3.5 px-1 rounded-2xl ${
+                className={`py-2.5 px-1 rounded-xl ${
                   mode === "shadowing" ? "bg-[#004ac6] text-white shadow-md shadow-[#004ac6]/25" : "bg-[#eaedff] hover:bg-[#e2e7ff]/80 text-[#131b2e]"
-                } font-label-md text-xs font-bold whitespace-nowrap active:scale-95 transition cursor-pointer flex flex-col items-center justify-center gap-1 shadow-sm`}
+                } font-label-md text-[11px] font-bold whitespace-nowrap active:scale-95 transition cursor-pointer flex flex-col items-center justify-center gap-0.5 shadow-sm`}
                 onClick={() => {
                   clearTimer();
                   teardownSTT();
@@ -812,13 +812,13 @@ function TalkyRoomContent() {
                 }}
                 type="button"
               >
-                <span className="text-[17px]">🗣️</span>
+                <span className="text-[15px]">🗣️</span>
                 <span>따라하기</span>
               </button>
               <button
-                className={`py-3.5 px-1 rounded-2xl ${
+                className={`py-2.5 px-1 rounded-xl ${
                   mode === "roleplay" ? "bg-[#004ac6] text-white shadow-md shadow-[#004ac6]/25" : "bg-[#eaedff] hover:bg-[#e2e7ff]/80 text-[#131b2e]"
-                } font-label-md text-xs font-bold whitespace-nowrap active:scale-95 transition cursor-pointer flex flex-col items-center justify-center gap-1 shadow-sm`}
+                } font-label-md text-[11px] font-bold whitespace-nowrap active:scale-95 transition cursor-pointer flex flex-col items-center justify-center gap-0.5 shadow-sm`}
                 onClick={() => {
                   clearTimer();
                   teardownSTT();
@@ -831,13 +831,13 @@ function TalkyRoomContent() {
                 }}
                 type="button"
               >
-                <span className="text-[17px]">🎭</span>
+                <span className="text-[15px]">🎭</span>
                 <span>롤플레이</span>
               </button>
               <button
-                className={`py-3.5 px-1 rounded-2xl ${
+                className={`py-2.5 px-1 rounded-xl ${
                   mode === "role_switch" ? "bg-[#004ac6] text-white shadow-md shadow-[#004ac6]/25" : "bg-[#eaedff] hover:bg-[#e2e7ff]/80 text-[#131b2e]"
-                } font-label-md text-xs font-bold whitespace-nowrap active:scale-95 transition cursor-pointer flex flex-col items-center justify-center gap-1 shadow-sm`}
+                } font-label-md text-[11px] font-bold whitespace-nowrap active:scale-95 transition cursor-pointer flex flex-col items-center justify-center gap-0.5 shadow-sm`}
                 onClick={() => {
                   clearTimer();
                   teardownSTT();
@@ -850,7 +850,7 @@ function TalkyRoomContent() {
                 }}
                 type="button"
               >
-                <span className="text-[17px]">🔄</span>
+                <span className="text-[15px]">🔄</span>
                 <span>역할교대</span>
               </button>
             </div>
