@@ -33,6 +33,49 @@ function TalkyRoomContent() {
   const isRecognizingRef = useRef<boolean>(false);
   const silenceTimerRef = useRef<NodeJS.Timeout | null>(null);
   const latestTranscriptRef = useRef<string>("");
+  const wakeLockRef = useRef<any>(null);
+  const currentSessionIdRef = useRef<number>(0);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const requestWakeLock = async () => {
+      if (typeof window !== "undefined" && "wakeLock" in navigator && typeof (navigator as any).wakeLock.request === "function") {
+        try {
+          const lock = await (navigator as any).wakeLock.request("screen");
+          if (isMounted) {
+            wakeLockRef.current = lock;
+            lock.addEventListener("release", () => {
+              wakeLockRef.current = null;
+            });
+          } else {
+            lock.release().catch(() => {});
+          }
+        } catch (err) {
+          console.warn("Wake Lock request failed:", err);
+        }
+      }
+    };
+
+    requestWakeLock();
+
+    const handleVisibilityChange = async () => {
+      if (document.visibilityState === "visible" && !wakeLockRef.current) {
+        await requestWakeLock();
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      isMounted = false;
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      if (wakeLockRef.current) {
+        wakeLockRef.current.release().catch(() => {});
+        wakeLockRef.current = null;
+      }
+    };
+  }, []);
 
   const isSpeakingMode = mode !== "listen_all";
 
@@ -96,27 +139,60 @@ function TalkyRoomContent() {
     setIsListening(false);
   }, []);
 
+  const resetLearningSession = useCallback(() => {
+    currentSessionIdRef.current += 1;
+    clearTimer();
+    teardownSTT();
+    if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      window.speechSynthesis.cancel();
+    }
+    setSpeaking(false);
+    setSttStatus("idle");
+    setRecognizedText("");
+    setShowKorean(false);
+  }, [teardownSTT]);
+
   const normalizeText = (text: string) => {
     return text.toLowerCase().replace(/[^a-z0-9\s]/g, "").trim();
   };
 
-  const checkMatch = (spoken: string, target: string) => {
+  const checkMatch = (spoken: string, target: string, isFinal: boolean = false) => {
     const normSpoken = normalizeText(spoken);
     const normTarget = normalizeText(target);
     if (!normSpoken || !normTarget) return false;
 
-    if (normTarget.includes(normSpoken) || normSpoken.includes(normTarget)) {
-      return true;
-    }
-
     const targetWords = normTarget.split(/\s+/);
     const spokenWords = normSpoken.split(/\s+/);
+
+    // Minimum word count validation guard: at least 70% of target words count unless final with high match
+    const minRequiredWords = Math.max(1, Math.floor(targetWords.length * 0.7));
+    if (spokenWords.length < minRequiredWords && !isFinal) {
+      return false;
+    }
+
+    if (normTarget.includes(normSpoken) || normSpoken.includes(normTarget)) {
+      if (spokenWords.length >= minRequiredWords || isFinal) return true;
+    }
+
+    // Full match rate
     let matches = 0;
     for (const w of targetWords) {
       if (spokenWords.includes(w)) matches++;
     }
-    const matchRate = matches / Math.max(1, targetWords.length);
-    return matchRate >= 0.7; // 70% or more matching rate
+    const fullMatchRate = matches / Math.max(1, targetWords.length);
+
+    // First-word drop tolerance match rate (omitting first word if target has >= 2 words)
+    let subMatchRate = 0;
+    if (targetWords.length > 1) {
+      const subTargetWords = targetWords.slice(1);
+      let subMatches = 0;
+      for (const w of subTargetWords) {
+        if (spokenWords.includes(w)) subMatches++;
+      }
+      subMatchRate = subMatches / Math.max(1, subTargetWords.length);
+    }
+
+    return (fullMatchRate >= 0.7 || subMatchRate >= 0.65) && (spokenWords.length >= minRequiredWords || isFinal);
   };
 
   const stopListening = useCallback(() => {
@@ -125,65 +201,76 @@ function TalkyRoomContent() {
     setStatusText("음성 인식이 일시중지되었습니다. 다시 누르면 시작합니다. 🐾");
   }, [teardownSTT]);
 
-  const handleNextTurn = useCallback(() => {
-    clearTimer();
-    teardownSTT();
-    if (typeof window !== "undefined" && "speechSynthesis" in window) {
-      window.speechSynthesis.cancel();
-    }
-    if (!script || !script.dialogue) return;
-    if (currentTurn < script.dialogue.length - 1) {
-      setCurrentTurn((prev) => prev + 1);
-      setShowKorean(false);
-      setSttStatus("idle");
-      setRecognizedText("");
-      latestTranscriptRef.current = "";
-    } else {
-      setIsFeedbackModalOpen(true);
-      // Save completion
-      try {
-        const newCount = (script.completedCount || 0) + 1;
-        const updatedScript = { ...script, completedCount: newCount };
-        localStorage.setItem(`talkycat_script_${script.id}`, JSON.stringify(updatedScript));
+  const handleMissionComplete = useCallback((totalSentences: number, sessionId: number) => {
+    if (sessionId !== currentSessionIdRef.current) return;
+    setStatusText("미션 완료! 🐾");
+    setIsFeedbackModalOpen(true);
+    try {
+      const newCount = (script?.completedCount || 0) + 1;
+      const updatedScript = { ...script!, completedCount: newCount };
+      localStorage.setItem(`talkycat_script_${script?.id}`, JSON.stringify(updatedScript));
 
-        const saved = localStorage.getItem("talkycat_scripts");
-        if (saved) {
-          const parsedList: GeneratedScript[] = JSON.parse(saved);
-          if (Array.isArray(parsedList)) {
-            const updatedList = parsedList.map((s) => (s.id === script.id ? updatedScript : s));
-            localStorage.setItem("talkycat_scripts", JSON.stringify(updatedList));
-          }
+      const saved = localStorage.getItem("talkycat_scripts");
+      if (saved) {
+        const parsedList: GeneratedScript[] = JSON.parse(saved);
+        if (Array.isArray(parsedList)) {
+          const updatedList = parsedList.map((s) => (s.id === script?.id ? updatedScript : s));
+          localStorage.setItem("talkycat_scripts", JSON.stringify(updatedList));
         }
-
-        const todaySent = Number(localStorage.getItem("talkycat_today_sentences") || "0") + script.dialogue.length;
-        localStorage.setItem("talkycat_today_sentences", todaySent.toString());
-      } catch (e) {
-        console.error("Failed to save session completion", e);
       }
+
+      const todaySent = Number(localStorage.getItem("talkycat_today_sentences") || "0") + totalSentences;
+      localStorage.setItem("talkycat_today_sentences", todaySent.toString());
+    } catch (e) {
+      console.error("Failed to save session completion", e);
     }
-  }, [script, currentTurn, teardownSTT]);
+  }, [script]);
 
-  const evaluateSpeech = useCallback((transcript: string) => {
+  const handleFullNextTurn = useCallback((finishedTurn: number, dialogueList: DialogueLine[], sessionId: number) => {
+    if (sessionId !== currentSessionIdRef.current) return;
+    if (finishedTurn < dialogueList.length - 1) {
+      setStatusText("1.5초 후 다음 문장으로 이동합니다... 🐾");
+      timerRef.current = setTimeout(() => {
+        if (sessionId !== currentSessionIdRef.current) return;
+        setCurrentTurn(finishedTurn + 1);
+        setShowKorean(false);
+      }, 1500);
+    } else {
+      handleMissionComplete(dialogueList.length, sessionId);
+    }
+  }, [handleMissionComplete]);
+
+  const evaluateSpeech = useCallback((transcript: string, isFinal: boolean = false) => {
+    const sessionId = currentSessionIdRef.current;
     if (!script || !script.dialogue) return;
-    const target = script.dialogue[currentTurn]?.english || "";
+    const dialogueList = script.dialogue;
+    const currentLine = dialogueList[currentTurn];
+    const target = currentLine?.english || "";
 
-    if (checkMatch(transcript, target)) {
+    if (checkMatch(transcript, target, isFinal)) {
       teardownSTT();
       setSttStatus("success");
       setIsListening(false);
       setStatusText("완벽하다냥! 🎉");
 
-      // Sentence transition buffer: 1.5 seconds delay before moving to next step
+      // Sentence transition buffer: 1.5 seconds delay before moving to next step / turn
       timerRef.current = setTimeout(() => {
-        handleNextTurn();
+        if (sessionId !== currentSessionIdRef.current) return;
+        if (currentTurn < dialogueList.length - 1) {
+          setCurrentTurn((prev) => prev + 1);
+          setShowKorean(false);
+          setSttStatus("idle");
+          setRecognizedText("");
+          latestTranscriptRef.current = "";
+        } else {
+          handleMissionComplete(dialogueList.length, sessionId);
+        }
       }, 1500);
     }
-  }, [script, currentTurn, handleNextTurn, teardownSTT]);
+  }, [script, currentTurn, teardownSTT, handleMissionComplete]);
 
-  const startListening = useCallback(() => {
-    if (!isSpeakingMode) return;
+  const startListeningImmediate = useCallback(() => {
     if (isRecognizingRef.current) return;
-
     if (recognitionRef.current) {
       try {
         recognitionRef.current.stop();
@@ -195,14 +282,19 @@ function TalkyRoomContent() {
         isRecognizingRef.current = true;
         setIsListening(true);
         setSttStatus("listening");
-        setStatusText("말씀하세요, 음성 인식 중... 🎙️");
+        setStatusText("지금 말해보라냥! 🎙️");
       } catch (e) {
         console.warn("Recognition start error:", e);
         isRecognizingRef.current = false;
         setIsListening(false);
       }
     }
-  }, [isSpeakingMode]);
+  }, []);
+
+  const startListening = useCallback(() => {
+    if (!isSpeakingMode && mode === "listen_all") return;
+    startListeningImmediate();
+  }, [isSpeakingMode, mode, startListeningImmediate]);
 
   // Initialize Speech Recognition
   useEffect(() => {
@@ -231,18 +323,18 @@ function TalkyRoomContent() {
         latestTranscriptRef.current = currentTranscript;
         setRecognizedText(currentTranscript);
 
-        // Silence debounce fallback (1.5s)
+        // Silence debounce fallback (1.8s) for breathing and natural pauses
         if (silenceTimerRef.current) {
           clearTimeout(silenceTimerRef.current);
         }
         silenceTimerRef.current = setTimeout(() => {
           if (isRecognizingRef.current && currentTranscript) {
-            evaluateSpeech(currentTranscript);
+            evaluateSpeech(currentTranscript, false);
           }
-        }, 1500);
+        }, 1800);
 
         if (finalTranscript) {
-          evaluateSpeech(finalTranscript);
+          evaluateSpeech(finalTranscript, true);
         }
       };
 
@@ -308,7 +400,7 @@ function TalkyRoomContent() {
         }
       }
 
-      // Fallback mock script
+      // Fallback mock script with 8 turns for rich Tiki-Taka roleplay
       const fallback: GeneratedScript = {
         id: id || "1",
         date: new Date().toISOString().slice(0, 10).replace(/-/g, "."),
@@ -329,8 +421,12 @@ function TalkyRoomContent() {
         dialogue: [
           { id: 1, speaker: "user", speakerName: "나 (손님)", english: "Excuse me, where can I find the bottled water?", korean: "실례합니다, 생수는 어디에 있나요?" },
           { id: 2, speaker: "cat", speakerName: "토키캣 (점원)", english: "Are you looking for cold water or room temperature water?", korean: "찬물 찾으세요, 상온 물 찾으세요?" },
-          { id: 3, speaker: "cat", speakerName: "토키캣 (점원)", english: "It's right over there in aisle 3, next to the cold drinks!", korean: "3번 통로 저기 바로 옆, 시원한 음료 코너 쪽에 있어요!" },
-          { id: 4, speaker: "user", speakerName: "나 (손님)", english: "Oh, perfect! How much is this one?", korean: "아, 딱 좋네요! 이 매운 건 얼마예요?" }
+          { id: 3, speaker: "user", speakerName: "나 (손님)", english: "I'd like a bottle of cold water, please.", korean: "시원한 생수 한 병 주세요." },
+          { id: 4, speaker: "cat", speakerName: "토키캣 (점원)", english: "It's right over there in aisle 3, next to the cold drinks!", korean: "3번 통로 저기 바로 옆, 시원한 음료 코너 쪽에 있어요!" },
+          { id: 5, speaker: "user", speakerName: "나 (손님)", english: "Got it! How much is this one?", korean: "알겠습니다! 이건 얼마인가요?" },
+          { id: 6, speaker: "cat", speakerName: "토키캣 (점원)", english: "That will be 1,500 won. Anything else you need?", korean: "1,500원입니다. 다른 필요한 거 있으신가요?" },
+          { id: 7, speaker: "user", speakerName: "나 (손님)", english: "No, that's all. Can I pay by card?", korean: "아니요, 이게 다예요. 카드 결제 되나요?" },
+          { id: 8, speaker: "cat", speakerName: "토키캣 (점원)", english: "Sure, insert your card right here. Thank you!", korean: "네, 여기에 카드 넣어주세요. 감사합니다!" }
         ],
         completedCount: 0
       };
@@ -351,7 +447,6 @@ function TalkyRoomContent() {
       return;
     }
 
-    // 1. Teardown STT completely and wake up audio output channel
     teardownSTT();
     await wakeAudioOutput();
 
@@ -387,48 +482,15 @@ function TalkyRoomContent() {
         speak();
       }, 300);
     } else {
-      // 300ms safety buffer for hardware output switching from mic to speaker
       setTimeout(() => {
         speak();
       }, 300);
     }
   }, [speed, selectedVoice, teardownSTT]);
 
-  const handleFullNextTurn = useCallback((finishedTurn: number, dialogueList: DialogueLine[]) => {
-    if (finishedTurn < dialogueList.length - 1) {
-      setStatusText("1.5초 후 다음 문장으로 이동합니다... 🐾");
-      timerRef.current = setTimeout(() => {
-        setCurrentTurn(finishedTurn + 1);
-        setShowKorean(false);
-      }, 1500);
-    } else {
-      setStatusText("미션 완료! 🐾");
-      setIsFeedbackModalOpen(true);
-      // Save completion
-      try {
-        const newCount = (script?.completedCount || 0) + 1;
-        const updatedScript = { ...script!, completedCount: newCount };
-        localStorage.setItem(`talkycat_script_${script?.id}`, JSON.stringify(updatedScript));
-
-        const saved = localStorage.getItem("talkycat_scripts");
-        if (saved) {
-          const parsedList: GeneratedScript[] = JSON.parse(saved);
-          if (Array.isArray(parsedList)) {
-            const updatedList = parsedList.map((s) => (s.id === script?.id ? updatedScript : s));
-            localStorage.setItem("talkycat_scripts", JSON.stringify(updatedList));
-          }
-        }
-
-        const todaySent = Number(localStorage.getItem("talkycat_today_sentences") || "0") + dialogueList.length;
-        localStorage.setItem("talkycat_today_sentences", todaySent.toString());
-      } catch (e) {
-        console.error("Failed to save session completion", e);
-      }
-    }
-  }, [script]);
-
-  // Main playback & timing control flow with initial wait and anti-echo buffer
+  // Main playback & timing control flow with Session ID (Run Token)
   useEffect(() => {
+    const sessionId = currentSessionIdRef.current;
     clearTimer();
     teardownSTT();
     setSttStatus("idle");
@@ -437,53 +499,143 @@ function TalkyRoomContent() {
 
     if (!script || !script.dialogue) return;
     const dialogueList = script.dialogue;
+    if (currentTurn >= dialogueList.length) return;
+
+    const currentLine = dialogueList[currentTurn];
+    let effectiveSpeaker = currentLine.speaker;
+    if (mode === "role_switch") {
+      effectiveSpeaker = currentLine.speaker === "cat" ? "user" : "cat";
+    }
 
     if (mode === "listen_all") {
       if (currentTurn === 0) {
         setStatusText("1.5초 후 전체듣기가 시작됩니다... 🐾");
         timerRef.current = setTimeout(() => {
-          speakCurrentLine(dialogueList[0].english, () => {
-            handleFullNextTurn(0, dialogueList);
+          if (sessionId !== currentSessionIdRef.current) return;
+          speakCurrentLine(currentLine.english, () => {
+            if (sessionId !== currentSessionIdRef.current) return;
+            handleFullNextTurn(currentTurn, dialogueList, sessionId);
           });
         }, 1500);
-      } else if (currentTurn < dialogueList.length) {
-        speakCurrentLine(dialogueList[currentTurn].english, () => {
-          handleFullNextTurn(currentTurn, dialogueList);
+      } else {
+        speakCurrentLine(currentLine.english, () => {
+          if (sessionId !== currentSessionIdRef.current) return;
+          handleFullNextTurn(currentTurn, dialogueList, sessionId);
         });
       }
-    } else {
-      // Speaking modes with initial 1.5s wait and anti-echo buffer (900ms)
+    } else if (mode === "shadowing") {
       setStatusText("1.5초 후 발화 준비... 🐾");
       timerRef.current = setTimeout(() => {
-        speakCurrentLine(dialogueList[currentTurn].english, () => {
-          setStatusText("마이크 활성화 대기 중... 🎙️");
-          timerRef.current = setTimeout(() => {
-            startListening();
-          }, 900);
+        if (sessionId !== currentSessionIdRef.current) return;
+        speakCurrentLine(currentLine.english, () => {
+          if (sessionId !== currentSessionIdRef.current) return;
+          setIsListening(true);
+          setSttStatus("listening");
+          setStatusText("지금 말해보라냥! 🎙️");
+          setTimeout(() => {
+            if (sessionId !== currentSessionIdRef.current) return;
+            startListeningImmediate();
+          }, 300);
         });
       }, 1500);
+    } else {
+      // Roleplay or Role Switch (Tiki-Taka Turn-Based Mode)
+      if (effectiveSpeaker === "cat") {
+        // System (TalkyCat) Turn
+        setStatusText("1.5초 후 토키캣이 대화합니다... 🐾");
+        timerRef.current = setTimeout(() => {
+          if (sessionId !== currentSessionIdRef.current) return;
+          speakCurrentLine(currentLine.english, () => {
+            if (sessionId !== currentSessionIdRef.current) return;
+            const nextIdx = currentTurn + 1;
+            if (nextIdx < dialogueList.length) {
+              const nextLine = dialogueList[nextIdx];
+              let nextEffectiveSpeaker = nextLine.speaker;
+              if (mode === "role_switch") {
+                nextEffectiveSpeaker = nextLine.speaker === "cat" ? "user" : "cat";
+              }
+
+              if (nextEffectiveSpeaker === "user") {
+                if (sessionId !== currentSessionIdRef.current) return;
+                setCurrentTurn(nextIdx);
+                setShowKorean(false);
+                setIsListening(true);
+                setSttStatus("listening");
+                setStatusText("지금 말해보라냥! 🎙️");
+
+                timerRef.current = setTimeout(() => {
+                  if (sessionId !== currentSessionIdRef.current) return;
+                  startListeningImmediate();
+                }, 300);
+              } else {
+                setStatusText("1.5초 후 다음 턴으로 전환됩니다... 🐾");
+                timerRef.current = setTimeout(() => {
+                  if (sessionId !== currentSessionIdRef.current) return;
+                  setCurrentTurn(nextIdx);
+                  setShowKorean(false);
+                }, 1500);
+              }
+            } else {
+              handleMissionComplete(dialogueList.length, sessionId);
+            }
+          });
+        }, 1500);
+      } else {
+        // User Turn (at index 0 or when starting)
+        setStatusText("내 차례다냥! 1.5초 후 마이크가 켜집니다 🎙️");
+        timerRef.current = setTimeout(() => {
+          if (sessionId !== currentSessionIdRef.current) return;
+          setIsListening(true);
+          setSttStatus("listening");
+          setStatusText("지금 말해보라냥! 🎙️");
+          timerRef.current = setTimeout(() => {
+            if (sessionId !== currentSessionIdRef.current) return;
+            startListeningImmediate();
+          }, 300);
+        }, 1500);
+      }
     }
-  }, [currentTurn, script, mode, speakCurrentLine, handleFullNextTurn, startListening, teardownSTT]);
+  }, [currentTurn, script, mode, speakCurrentLine, startListeningImmediate, handleMissionComplete, handleFullNextTurn, teardownSTT]);
 
   const handleManualReplay = () => {
+    const sessionId = currentSessionIdRef.current;
     clearTimer();
     teardownSTT();
     if (!script || !script.dialogue) return;
+    const currentLine = script.dialogue[currentTurn];
+    let effectiveSpeaker = currentLine.speaker;
+    if (mode === "role_switch") {
+      effectiveSpeaker = currentLine.speaker === "cat" ? "user" : "cat";
+    }
 
-    speakCurrentLine(script.dialogue[currentTurn].english, () => {
-      if (mode === "listen_all") {
-        handleFullNextTurn(currentTurn, script.dialogue);
-      } else {
-        setStatusText("마이크 활성화 대기 중... 🎙️");
-        timerRef.current = setTimeout(() => {
-          startListening();
-        }, 900);
-      }
-    });
+    if (mode === "listen_all" || mode === "shadowing" || effectiveSpeaker === "cat") {
+      speakCurrentLine(currentLine.english, () => {
+        if (sessionId !== currentSessionIdRef.current) return;
+        if (mode === "listen_all") {
+          handleFullNextTurn(currentTurn, script.dialogue, sessionId);
+        } else if (mode === "shadowing") {
+          setIsListening(true);
+          setSttStatus("listening");
+          setStatusText("지금 말해보라냥! 🎙️");
+          setTimeout(() => {
+            if (sessionId !== currentSessionIdRef.current) return;
+            startListeningImmediate();
+          }, 300);
+        }
+      });
+    } else {
+      setIsListening(true);
+      setSttStatus("listening");
+      setStatusText("지금 말해보라냥! 🎙️");
+      setTimeout(() => {
+        if (sessionId !== currentSessionIdRef.current) return;
+        startListeningImmediate();
+      }, 300);
+    }
   };
 
   const handleMicClick = () => {
-    if (!isSpeakingMode) {
+    if (!isSpeakingMode && mode === "listen_all") {
       setStatusText("전체듣기 모드에서는 마이크를 사용할 수 없습니다 🎧");
       return;
     }
@@ -492,6 +644,17 @@ function TalkyRoomContent() {
     } else {
       startListening();
     }
+  };
+
+  const handleModeChange = (newMode: LearningMode) => {
+    if (newMode === mode) return;
+    resetLearningSession();
+    setMode(newMode);
+    const sessionId = currentSessionIdRef.current;
+    setTimeout(() => {
+      if (sessionId !== currentSessionIdRef.current) return;
+      setCurrentTurn(0);
+    }, 200);
   };
 
   if (!isMounted || !script) {
@@ -505,8 +668,17 @@ function TalkyRoomContent() {
   const dialogueList: DialogueLine[] = script.dialogue || [];
   const currentLine = dialogueList[currentTurn] || dialogueList[0];
   const progressPercent = Math.round(((currentTurn + 1) / dialogueList.length) * 100);
-  const isCat = currentLine.speaker === "cat";
   const nextLine = dialogueList[currentTurn + 1];
+
+  // Dynamic Speaker Determination based on mode and speech state
+  const isUserActiveState = mode !== "listen_all" && isListening;
+  const speakerBadgeLabel = isUserActiveState
+    ? `${nickname} (${currentLine.speakerName && currentLine.speakerName.includes("손님") ? "손님" : "나"})`
+    : `토키캣 (${currentLine.speakerName && (currentLine.speakerName.includes("점원") || currentLine.speakerName.includes("토키캣")) ? currentLine.speakerName : "시스템"})`;
+  const speakerBadgeIcon = isUserActiveState ? "mic" : "smart_toy";
+  const speakerBadgeStyle = isUserActiveState
+    ? "bg-[#6ffbbe]/40 text-[#002113]"
+    : "bg-[#dbe1ff] text-[#00174b]";
 
   return (
     <div className="min-h-screen bg-[#faf8ff] text-[#131b2e] flex flex-col items-center justify-start relative select-none">
@@ -518,7 +690,7 @@ function TalkyRoomContent() {
             <div className="flex items-center gap-2">
               <button
                 className="w-10 h-10 rounded-full bg-[#eaedff] hover:bg-[#e2e7ff] text-[#131b2e] flex items-center justify-center transition-colors cursor-pointer active:scale-95"
-                onClick={() => router.push("/")}
+                onClick={() => router.replace("/")}
                 type="button"
                 aria-label="메인으로 돌아가기"
               >
@@ -548,7 +720,7 @@ function TalkyRoomContent() {
           </div>
         </header>
 
-        {/* Main Content (Scrollable Flow including title, avatar, and sentence card) */}
+        {/* Main Content */}
         <main className="flex-1 flex flex-col relative w-full pt-16 pb-28 bg-[#faf8ff]">
           <div className="flex flex-col w-full relative select-none gap-3 px-3">
 
@@ -566,7 +738,10 @@ function TalkyRoomContent() {
                     </span>
                   </div>
                   <p className="font-body-sm text-[10px] text-[#434655] truncate">
-                    {mode === "listen_all" ? "전체듣기 모드 (핸즈프리)" : "발화 훈련 모드 (정밀 음성 인식)"}
+                    {mode === "listen_all" && "전체듣기 모드 (핸즈프리)"}
+                    {mode === "shadowing" && "따라하기 훈련 모드"}
+                    {mode === "roleplay" && "롤플레이 턴제 대화 모드 (티키타카)"}
+                    {mode === "role_switch" && "역할교대 턴제 대화 모드 (반대 역할)"}
                   </p>
                 </div>
               </div>
@@ -644,13 +819,11 @@ function TalkyRoomContent() {
                 
                 <div className="flex items-center justify-between w-full">
                   <div className="flex items-center gap-2">
-                    <span className={`px-2 py-0.5 rounded-full text-[11px] font-bold flex items-center gap-1 ${
-                      isCat ? "bg-[#dbe1ff] text-[#00174b]" : "bg-[#6ffbbe]/40 text-[#002113]"
-                    }`}>
+                    <span className={`px-2 py-0.5 rounded-full text-[11px] font-bold flex items-center gap-1 ${speakerBadgeStyle}`}>
                       <span className="material-symbols-outlined text-[14px]">
-                        {isCat ? "smart_toy" : "person"}
+                        {speakerBadgeIcon}
                       </span>
-                      {currentLine.speakerName || (isCat ? "토키캣" : "나")}
+                      {speakerBadgeLabel}
                     </span>
                     <span className="font-label-sm text-[11px] text-[#737686] font-semibold">
                       문장 {currentTurn + 1} / {dialogueList.length}
@@ -718,10 +891,10 @@ function TalkyRoomContent() {
           </div>
         </main>
 
-        {/* Fixed Bottom Deck: Combined Control Deck (3 buttons) & Action Buttons (4 buttons) in a single frame */}
+        {/* Fixed Bottom Deck: Combined Control Deck (3 buttons) & Action Buttons (4 buttons) */}
         <div className="fixed bottom-0 left-0 right-0 z-40 bg-[#faf8ff]/95 backdrop-blur-md border-t border-[#e2e7ff]/60 p-2 pb-safe flex items-center justify-center shadow-lg">
           <div className="w-full max-w-[480px] flex flex-col gap-2 bg-white/90 p-2.5 rounded-2xl border border-[#eaedff] shadow-sm">
-            {/* Control Deck (3 buttons: 다시듣기, 마이크터치/제어, 종료) */}
+            {/* Control Deck (3 buttons) */}
             <div className="w-full rounded-xl bg-[#f2f3ff] p-2 shadow-sm flex items-center justify-around border border-[#eaedff]">
               <div className="flex flex-col items-center">
                 <button
@@ -738,7 +911,7 @@ function TalkyRoomContent() {
               <div className="flex flex-col items-center">
                 <button
                   className={`w-12 h-12 rounded-full ${
-                    !isSpeakingMode
+                    !isSpeakingMode && mode === "listen_all"
                       ? "bg-slate-300 cursor-not-allowed opacity-50"
                       : isListening
                       ? "bg-emerald-600 animate-pulse shadow-md shadow-emerald-600/30"
@@ -747,14 +920,14 @@ function TalkyRoomContent() {
                   onClick={handleMicClick}
                   type="button"
                   aria-label="음성 인식 제어"
-                  disabled={!isSpeakingMode}
+                  disabled={!isSpeakingMode && mode === "listen_all"}
                 >
                   <span className="material-symbols-outlined text-[22px]">
-                    {!isSpeakingMode ? "mic_off" : isListening ? "mic" : "mic"}
+                    {!isSpeakingMode && mode === "listen_all" ? "mic_off" : isListening ? "mic" : "mic"}
                   </span>
                 </button>
                 <span className="font-label-sm text-[10px] text-[#004ac6] font-bold mt-1" id="mic-hint-text">
-                  {!isSpeakingMode
+                  {!isSpeakingMode && mode === "listen_all"
                     ? "마이크 비활성화됨"
                     : isListening
                     ? "듣고 있어요... (터치시 일시정지)"
@@ -765,7 +938,7 @@ function TalkyRoomContent() {
               <div className="flex flex-col items-center">
                 <button
                   className="w-10 h-10 rounded-full bg-[#ffdad6] text-[#93000a] flex items-center justify-center hover:bg-[#ba1a1a] hover:text-white active:scale-90 transition shadow-sm cursor-pointer"
-                  onClick={() => router.push("/")}
+                  onClick={() => router.replace("/")}
                   type="button"
                   aria-label="학습 종료"
                 >
@@ -781,16 +954,7 @@ function TalkyRoomContent() {
                 className={`py-2.5 px-1 rounded-xl ${
                   mode === "listen_all" ? "bg-[#004ac6] text-white shadow-md shadow-[#004ac6]/25" : "bg-[#eaedff] hover:bg-[#e2e7ff]/80 text-[#131b2e]"
                 } font-label-md text-[11px] font-bold whitespace-nowrap active:scale-95 transition cursor-pointer flex flex-col items-center justify-center gap-0.5 shadow-sm`}
-                onClick={() => {
-                  clearTimer();
-                  teardownSTT();
-                  if (typeof window !== "undefined" && "speechSynthesis" in window) {
-                    window.speechSynthesis.cancel();
-                  }
-                  setMode("listen_all");
-                  setCurrentTurn(0);
-                  setShowKorean(false);
-                }}
+                onClick={() => handleModeChange("listen_all")}
                 type="button"
               >
                 <span className="text-[15px]">🎧</span>
@@ -800,16 +964,7 @@ function TalkyRoomContent() {
                 className={`py-2.5 px-1 rounded-xl ${
                   mode === "shadowing" ? "bg-[#004ac6] text-white shadow-md shadow-[#004ac6]/25" : "bg-[#eaedff] hover:bg-[#e2e7ff]/80 text-[#131b2e]"
                 } font-label-md text-[11px] font-bold whitespace-nowrap active:scale-95 transition cursor-pointer flex flex-col items-center justify-center gap-0.5 shadow-sm`}
-                onClick={() => {
-                  clearTimer();
-                  teardownSTT();
-                  if (typeof window !== "undefined" && "speechSynthesis" in window) {
-                    window.speechSynthesis.cancel();
-                  }
-                  setMode("shadowing");
-                  setCurrentTurn(0);
-                  setShowKorean(false);
-                }}
+                onClick={() => handleModeChange("shadowing")}
                 type="button"
               >
                 <span className="text-[15px]">🗣️</span>
@@ -819,16 +974,7 @@ function TalkyRoomContent() {
                 className={`py-2.5 px-1 rounded-xl ${
                   mode === "roleplay" ? "bg-[#004ac6] text-white shadow-md shadow-[#004ac6]/25" : "bg-[#eaedff] hover:bg-[#e2e7ff]/80 text-[#131b2e]"
                 } font-label-md text-[11px] font-bold whitespace-nowrap active:scale-95 transition cursor-pointer flex flex-col items-center justify-center gap-0.5 shadow-sm`}
-                onClick={() => {
-                  clearTimer();
-                  teardownSTT();
-                  if (typeof window !== "undefined" && "speechSynthesis" in window) {
-                    window.speechSynthesis.cancel();
-                  }
-                  setMode("roleplay");
-                  setCurrentTurn(0);
-                  setShowKorean(false);
-                }}
+                onClick={() => handleModeChange("roleplay")}
                 type="button"
               >
                 <span className="text-[15px]">🎭</span>
@@ -838,16 +984,7 @@ function TalkyRoomContent() {
                 className={`py-2.5 px-1 rounded-xl ${
                   mode === "role_switch" ? "bg-[#004ac6] text-white shadow-md shadow-[#004ac6]/25" : "bg-[#eaedff] hover:bg-[#e2e7ff]/80 text-[#131b2e]"
                 } font-label-md text-[11px] font-bold whitespace-nowrap active:scale-95 transition cursor-pointer flex flex-col items-center justify-center gap-0.5 shadow-sm`}
-                onClick={() => {
-                  clearTimer();
-                  teardownSTT();
-                  if (typeof window !== "undefined" && "speechSynthesis" in window) {
-                    window.speechSynthesis.cancel();
-                  }
-                  setMode("role_switch");
-                  setCurrentTurn(0);
-                  setShowKorean(false);
-                }}
+                onClick={() => handleModeChange("role_switch")}
                 type="button"
               >
                 <span className="text-[15px]">🔄</span>
@@ -887,7 +1024,9 @@ function TalkyRoomContent() {
               <div className="flex flex-col gap-2.5 w-full pt-2">
                 <button
                   className="w-full py-3 rounded-2xl bg-[#004ac6] text-white font-label-md text-sm font-bold shadow-md hover:bg-[#2563eb] transition cursor-pointer"
-                  onClick={() => setIsFeedbackModalOpen(false)}
+                  onClick={() => {
+                    setIsFeedbackModalOpen(false);
+                  }}
                   type="button"
                 >
                   닫기

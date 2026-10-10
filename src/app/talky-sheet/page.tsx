@@ -150,7 +150,7 @@ function TalkySheetContent() {
             <div className="flex items-center gap-2">
               <button
                 className="w-10 h-10 rounded-full bg-[#eaedff] hover:bg-[#e2e7ff] text-[#131b2e] flex items-center justify-center transition-colors cursor-pointer active:scale-95"
-                onClick={() => router.back()}
+                onClick={() => router.replace("/")}
                 type="button"
                 aria-label="뒤로가기"
               >

@@ -36,8 +36,39 @@ export default function Home() {
   const [scriptToDelete, setScriptToDelete] = useState<ScriptListItem | null>(null);
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
   const [deleteToastVisible, setDeleteToastVisible] = useState(false);
+  const [exitToastVisible, setExitToastVisible] = useState(false);
+  const lastBackPressTimeRef = useRef(0);
   const longPressTimerRef = useRef<NodeJS.Timeout | null>(null);
   const isLongPressRef = useRef(false);
+
+  useEffect(() => {
+    try {
+      window.history.pushState({ page: "talkycat_main" }, "", window.location.href);
+    } catch {}
+
+    const handlePopState = (event: PopStateEvent) => {
+      event.preventDefault();
+      const now = Date.now();
+      if (now - lastBackPressTimeRef.current < 2000) {
+        window.history.back();
+      } else {
+        lastBackPressTimeRef.current = now;
+        setExitToastVisible(true);
+        setTimeout(() => {
+          setExitToastVisible(false);
+        }, 2000);
+        try {
+          window.history.pushState({ page: "talkycat_main" }, "", window.location.href);
+        } catch {}
+      }
+    };
+
+    window.addEventListener("popstate", handlePopState);
+
+    return () => {
+      window.removeEventListener("popstate", handlePopState);
+    };
+  }, []);
 
   const startLongPress = (item: ScriptListItem) => {
     isLongPressRef.current = false;
@@ -560,6 +591,20 @@ export default function Home() {
             delete_outline
           </span>
           <span>스크립트가 삭제되었습니다 🗑️</span>
+        </div>
+
+        {/* Exit Toast Notification */}
+        <div
+          className={`fixed top-20 left-1/2 -translate-x-1/2 z-50 bg-[#283044]/95 backdrop-blur-md text-white px-4 py-2.5 rounded-full shadow-xl text-xs font-semibold flex items-center gap-2 transition-all duration-300 ${
+            exitToastVisible
+              ? "opacity-100 translate-y-0"
+              : "opacity-0 -translate-y-2 pointer-events-none"
+          }`}
+        >
+          <span className="material-symbols-outlined text-[#fea619] text-[18px]">
+            info
+          </span>
+          <span>뒤로가기 버튼을 한 번 더 누르면 종료됩니다 🐾</span>
         </div>
 
         {/* Modals */}
