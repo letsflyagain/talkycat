@@ -20,7 +20,7 @@ export interface PronunciationTip {
 export interface GeneratedScript {
   id: string;                     // Date.now().toString()
   date: string;                   // "YYYY.MM.DD"
-  category: "생활영어" | "비즈니스" | "여행/식당";
+  category: "생활영어" | "비즈니스" | "여행/식당" | "영화/드라마 명장면";
   title: string;                  // 예: "편의점에서 물건 위치 묻기"
   mission: string;                // 예: "편의점 직원에게 생수 위치를 묻고 카드 결제까지 완료하기"
   corePatterns: CorePattern[];    // 정확히 3개

@@ -1,4 +1,5 @@
 "use client";
+/* eslint-disable react-hooks/set-state-in-effect */
 
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
@@ -11,7 +12,7 @@ interface ScriptListItem {
   id: string;
   date: string;
   completedCount: number;
-  category: "생활영어" | "비즈니스" | "여행/식당";
+  category: "생활영어" | "비즈니스" | "여행/식당" | "영화/드라마 명장면";
   title: string;
 }
 
@@ -25,13 +26,14 @@ export default function Home() {
   const [todaySentences, setTodaySentences] = useState(0);
 
   const [scripts, setScripts] = useState<ScriptListItem[]>([]);
-  const [isMounted, setIsMounted] = useState(false);
 
   const [isNicknameModalOpen, setIsNicknameModalOpen] = useState(false);
+  const [isConfigModalOpen, setIsConfigModalOpen] = useState(false);
+  const [customTopicInput, setCustomTopicInput] = useState("");
+
   const [isGenerating, setIsGenerating] = useState(false);
   const [toastVisible, setToastVisible] = useState(false);
-  const [activeTab, setActiveTab] = useState<"전체" | "생활영어" | "비즈니스" | "여행/식당">("전체");
-  const [generatedScriptId, setGeneratedScriptId] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<"전체" | "생활영어" | "비즈니스" | "여행/식당" | "영화/드라마 명장면">("전체");
 
   const [scriptToDelete, setScriptToDelete] = useState<ScriptListItem | null>(null);
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
@@ -138,7 +140,6 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    setIsMounted(true);
     try {
       const savedNickname = localStorage.getItem("talkycat_nickname");
       const savedStreakCount = localStorage.getItem("talkycat_streak_count");
@@ -177,13 +178,27 @@ export default function Home() {
     checkScripts();
   };
 
+  const handleOpenConfigModal = () => {
+    setCustomTopicInput("");
+    setIsConfigModalOpen(true);
+  };
+
   const handleStartGeneration = async () => {
+    setIsConfigModalOpen(false);
     setIsGenerating(true);
-    setGeneratedScriptId(null);
+
+    const excludeTopics = scripts.slice(0, 5).map(s => s.title);
 
     try {
       const res = await fetch("/api/generate-script", {
         method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          customTopic: customTopicInput,
+          excludeTopics,
+        }),
       });
       const data = await res.json();
 
@@ -192,7 +207,6 @@ export default function Home() {
           console.error("[TalkyCat] Gemini API call failed or unavailable. Using mock fallback script. Exact Error:", data.error || "Unknown error");
         }
         const newScript: GeneratedScript = data.script;
-        setGeneratedScriptId(newScript.id);
 
         let existing: GeneratedScript[] = [];
         try {
@@ -215,16 +229,38 @@ export default function Home() {
         console.error("[TalkyCat] API returned failure response:", errorDetail);
         throw new Error(errorDetail);
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       const errMessage = err instanceof Error ? err.message : String(err);
       console.error("[TalkyCat] Generation API error / Fallback triggered. Exact Error:", errMessage);
       const fallbackId = Date.now().toString();
+      const trimmedTopic = customTopicInput.trim();
+      let fallbackCategory: "생활영어" | "비즈니스" | "여행/식당" | "영화/드라마 명장면" = "생활영어";
+      if (trimmedTopic) {
+        const lower = trimmedTopic.toLowerCase();
+        if (lower.includes("여행") || lower.includes("공항") || lower.includes("호텔") || lower.includes("길") || lower.includes("식당") || lower.includes("카페") || lower.includes("주문")) {
+          fallbackCategory = "여행/식당";
+        } else if (lower.includes("회사") || lower.includes("출근") || lower.includes("회의") || lower.includes("업무") || lower.includes("동료") || lower.includes("비즈니스")) {
+          fallbackCategory = "비즈니스";
+        } else if (lower.includes("영화") || lower.includes("드라마") || lower.includes("명장면") || lower.includes("패러디") || lower.includes("타이타닉") || lower.includes("주인공")) {
+          fallbackCategory = "영화/드라마 명장면";
+        } else {
+          fallbackCategory = "생활영어";
+        }
+      }
+
+      const fallbackTitle = trimmedTopic
+        ? (fallbackCategory === "영화/드라마 명장면" ? `영화 ${trimmedTopic} 느낌의 상황` : `맞춤 주제: ${trimmedTopic}`)
+        : "편의점에서 생수와 간식 찾기";
+      const fallbackMission = trimmedTopic
+        ? `${trimmedTopic} 상황에서 토키캣과 영어 대화 나누기`
+        : "편의점 직원에게 생수 위치를 묻고 결제하기";
+
       const fallbackScript: GeneratedScript = {
         id: fallbackId,
         date: new Date().toISOString().slice(0, 10).replace(/-/g, "."),
-        category: "생활영어",
-        title: "편의점에서 생수와 간식 찾기",
-        mission: "편의점 직원에게 생수 위치를 묻고 결제하기",
+        category: fallbackCategory,
+        title: fallbackTitle,
+        mission: fallbackMission,
         corePatterns: [
           { pattern: "Where can I find ~?", meaning: "~는 어디 있나요?" },
           { pattern: "How much is this?", meaning: "얼마인가요?" },
@@ -242,7 +278,6 @@ export default function Home() {
         ],
         completedCount: 0
       };
-      setGeneratedScriptId(fallbackId);
 
       let existing: GeneratedScript[] = [];
       try {
@@ -266,9 +301,7 @@ export default function Home() {
     setToastVisible(true);
     setTimeout(() => {
       setToastVisible(false);
-      const targetId = generatedScriptId || (scripts.length > 0 ? scripts[0].id : Date.now().toString());
-      router.push(`/talky-room?id=${targetId}`);
-    }, 800);
+    }, 2000);
   };
 
   const handleFreeTalk = () => {
@@ -286,14 +319,6 @@ export default function Home() {
     activeTab === "전체"
       ? scripts
       : scripts.filter((s) => s.category === activeTab);
-
-  if (!isMounted) {
-    return (
-      <div className="min-h-screen bg-[#faf8ff] flex items-center justify-center">
-        <div className="w-8 h-8 rounded-full border-4 border-[#004ac6] border-t-transparent animate-spin" />
-      </div>
-    );
-  }
 
   return (
     <div className="min-h-screen bg-[#faf8ff] text-[#131b2e] flex flex-col items-center justify-start relative select-none">
@@ -407,13 +432,13 @@ export default function Home() {
               </div>
 
               {/* Filter Pills */}
-              <div className="grid grid-cols-4 gap-1.5 w-full">
-                {(["전체", "생활영어", "비즈니스", "여행/식당"] as const).map((tab) => {
+              <div className="grid grid-cols-5 gap-1 w-full">
+                {(["전체", "생활영어", "비즈니스", "여행/식당", "영화/드라마 명장면"] as const).map((tab) => {
                   const isActive = activeTab === tab;
                   return (
                     <button
                       key={tab}
-                      className={`py-1.5 rounded-full text-center font-label-sm text-[11px] font-semibold transition-all cursor-pointer ${
+                      className={`py-1.5 px-1 rounded-full text-center font-label-sm text-[10px] sm:text-[11px] font-semibold transition-all cursor-pointer truncate ${
                         isActive
                           ? "bg-[#004ac6] text-white shadow-sm"
                           : "bg-[#eaedff] text-[#434655] hover:bg-[#e2e7ff]"
@@ -446,7 +471,7 @@ export default function Home() {
                     </div>
                     <button
                       className="mt-2 px-4 py-2 bg-[#004ac6] text-white text-xs font-semibold rounded-xl shadow-md shadow-[#004ac6]/20 hover:bg-[#2563eb] transition-all cursor-pointer flex items-center gap-1.5"
-                      onClick={handleStartGeneration}
+                      onClick={handleOpenConfigModal}
                       type="button"
                     >
                       <span className="material-symbols-outlined text-[16px]">
@@ -554,7 +579,7 @@ export default function Home() {
             </button>
             <button
               className="flex-1 h-14 bg-[#2563eb] text-white font-label-md text-xs sm:text-sm font-bold rounded-2xl shadow-lg shadow-[#2563eb]/25 flex items-center justify-center gap-1.5 active:scale-95 transition-all cursor-pointer hover:bg-[#1d4ed8] px-2 text-center leading-tight"
-              onClick={handleStartGeneration}
+              onClick={handleOpenConfigModal}
               type="button"
             >
               <span className="material-symbols-outlined text-[18px]">
@@ -576,7 +601,7 @@ export default function Home() {
           <span className="material-symbols-outlined text-[#4edea3] text-[18px]">
             check_circle
           </span>
-          <span>스크립트 생성 완료! 토키룸으로 이동합니다 🚀</span>
+          <span>스크립트 생성 완료! 보관함에 추가되었습니다 🚀</span>
         </div>
 
         {/* Deletion Toast Notification */}
@@ -608,6 +633,70 @@ export default function Home() {
         </div>
 
         {/* Modals */}
+        {/* Slim Script Generation Input Modal */}
+        {isConfigModalOpen && (
+          <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 bg-black/50 backdrop-blur-sm animate-in fade-in">
+            <div className="w-full max-w-[480px] bg-white rounded-t-[2.5rem] sm:rounded-3xl shadow-2xl p-6 flex flex-col gap-5 animate-in slide-in-from-bottom duration-300">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="w-9 h-9 rounded-full bg-[#dbe1ff] flex items-center justify-center text-[#004ac6]">
+                    <span className="material-symbols-outlined text-[20px]">auto_awesome</span>
+                  </div>
+                  <div>
+                    <h3 className="font-headline-md text-base sm:text-lg font-bold text-[#131b2e]">
+                      새 스크립트 만들기 🐾
+                    </h3>
+                    <p className="font-body-sm text-[11px] text-[#737686]">
+                      대화하고 싶은 주제를 입력해 주세요!
+                    </p>
+                  </div>
+                </div>
+                <button
+                  className="w-8 h-8 rounded-full bg-[#eaedff] text-[#434655] flex items-center justify-center hover:bg-[#e2e7ff] transition cursor-pointer"
+                  onClick={() => setIsConfigModalOpen(false)}
+                  type="button"
+                >
+                  <span className="material-symbols-outlined text-[18px]">close</span>
+                </button>
+              </div>
+
+              {/* Form with Single-line Input and Submit on Enter */}
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  handleStartGeneration();
+                }}
+                className="flex flex-col gap-4"
+              >
+                <div className="flex flex-col gap-2">
+                  <input
+                    type="text"
+                    className="w-full h-12 bg-[#faf8ff] border border-[#eaedff] focus:border-[#004ac6] focus:ring-2 focus:ring-[#004ac6]/20 rounded-2xl px-4 text-xs sm:text-sm text-[#131b2e] placeholder:text-gray-400 font-normal outline-none transition"
+                    placeholder="미입력 시 무작위로 생성됩니다."
+                    value={customTopicInput}
+                    onChange={(e) => setCustomTopicInput(e.target.value)}
+                    autoFocus
+                  />
+                  <p className="font-body-sm text-[11px] text-[#737686] leading-relaxed px-1">
+                    💡 예: 여행에서 길 묻기, 카페에서 음료 주문하기, 동료와 점심 메뉴 고르기 등
+                  </p>
+                </div>
+
+                {/* Execution Action Button */}
+                <div className="pt-1">
+                  <button
+                    className="w-full h-14 bg-[#2563eb] text-white font-label-md text-sm font-bold rounded-2xl shadow-lg shadow-[#2563eb]/25 flex items-center justify-center gap-2 active:scale-95 transition-all cursor-pointer hover:bg-[#1d4ed8]"
+                    type="submit"
+                  >
+                    <span className="material-symbols-outlined text-[20px]">auto_awesome</span>
+                    <span>대본 만들기 🐾</span>
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
+
         {/* Delete Confirmation Modal */}
         {isDeleteModalOpen && scriptToDelete && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-in fade-in">

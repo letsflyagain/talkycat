@@ -1,4 +1,5 @@
 "use client";
+/* eslint-disable react-hooks/set-state-in-effect */
 
 import React, { useState, useEffect, Suspense, useCallback } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -12,9 +13,17 @@ function TalkySheetContent() {
 
   const [script, setScript] = useState<GeneratedScript | null>(null);
   const [nickname, setNickname] = useState("사용자");
-  const [isMounted, setIsMounted] = useState(false);
+  const isMounted = typeof window !== "undefined";
   const [speakingLineId, setSpeakingLineId] = useState<number | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  // Bottom Sheet State
+  const [isBottomSheetOpen, setIsBottomSheetOpen] = useState(false);
+  const [selectedDialogueItem, setSelectedDialogueItem] = useState<DialogueLine | null>(null);
+  const [bottomSheetLoading, setBottomSheetLoading] = useState(false);
+  const [bottomSheetSummary, setBottomSheetSummary] = useState("");
+  const [bottomSheetItems, setBottomSheetItems] = useState<{ en: string; ko: string }[]>([]);
+  const [customQuestionInput, setCustomQuestionInput] = useState("");
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -87,7 +96,6 @@ function TalkySheetContent() {
   }, [id]);
 
   useEffect(() => {
-    setIsMounted(true);
     loadScriptData();
   }, [loadScriptData]);
 
@@ -110,6 +118,62 @@ function TalkySheetContent() {
     utterance.onerror = () => setSpeakingLineId(null);
 
     window.speechSynthesis.speak(utterance);
+  };
+
+  const handleSpeakItem = (text: string) => {
+    if (typeof window === "undefined" || !("speechSynthesis" in window)) {
+      showToast("이 브라우저는 음성 재생을 지원하지 않습니다.");
+      return;
+    }
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = "en-US";
+    utterance.rate = 0.9;
+    window.speechSynthesis.speak(utterance);
+    showToast("영문 발음을 재생한다냥! 🔊");
+  };
+
+  const fetchExplanation = async (qType: "alternative" | "nuance" | "pronunciation" | "custom", customText?: string) => {
+    if (!script || !selectedDialogueItem) return;
+    setBottomSheetLoading(true);
+    setBottomSheetSummary("");
+    setBottomSheetItems([]);
+
+    try {
+      const res = await fetch("/api/explain-dialogue", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          scriptTitle: script.title,
+          targetEnglish: selectedDialogueItem.english,
+          targetKorean: selectedDialogueItem.korean,
+          questionType: qType,
+          customQuestion: customText || customQuestionInput
+        })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setBottomSheetSummary(data.summary || "토키캣의 코칭 답변이다냥! 🐾");
+        setBottomSheetItems(Array.isArray(data.items) ? data.items : []);
+      } else {
+        setBottomSheetSummary("토키캣이 졸고 있나 보다냥, 다시 물어봐달라냥! 🐾");
+        setBottomSheetItems([{ en: selectedDialogueItem.english, ko: "잠시 후 다시 시도해달라냥." }]);
+      }
+    } catch (e) {
+      console.error("Failed to fetch explanation", e);
+      setBottomSheetSummary("토키캣이 졸고 있나 보다냥, 다시 물어봐달라냥! 🐾");
+      setBottomSheetItems([{ en: selectedDialogueItem.english, ko: "네트워크 연결을 확인해달라냥." }]);
+    } finally {
+      setBottomSheetLoading(false);
+    }
+  };
+
+  const handleOpenBottomSheet = (item: DialogueLine) => {
+    setSelectedDialogueItem(item);
+    setIsBottomSheetOpen(true);
+    setBottomSheetSummary("");
+    setBottomSheetItems([]);
+    setCustomQuestionInput("");
   };
 
   const handleStartRoleplay = () => {
@@ -298,23 +362,37 @@ function TalkySheetContent() {
                           {line.speakerName || (isCat ? "토키캣" : "나")}
                         </span>
                       </div>
-                      <button
-                        className={`w-9 h-9 rounded-full flex items-center justify-center transition-all cursor-pointer ${
-                          isSpeaking
-                            ? "bg-[#004ac6] text-white animate-pulse"
-                            : "bg-[#eaedff] text-[#004ac6] hover:bg-[#dbe1ff]"
-                        }`}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleSpeakEnglish(line.english, line.id, index);
-                        }}
-                        type="button"
-                        title="영어 음성 듣기"
-                      >
-                        <span className="material-symbols-outlined text-[18px]">
-                          {isSpeaking ? "volume_up" : "volume_up"}
-                        </span>
-                      </button>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          className="px-2.5 py-1.5 rounded-xl bg-[#dbe1ff]/60 hover:bg-[#dbe1ff] text-[#004ac6] font-label-sm text-[11px] font-bold flex items-center gap-1 transition-colors cursor-pointer"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleOpenBottomSheet(line);
+                          }}
+                          type="button"
+                          title="토키캣에게 심화 질문하기"
+                        >
+                          <span className="material-symbols-outlined text-[15px]">psychology</span>
+                          <span>토키캣에게 묻기 🐾</span>
+                        </button>
+                        <button
+                          className={`w-9 h-9 rounded-full flex items-center justify-center transition-all cursor-pointer ${
+                            isSpeaking
+                              ? "bg-[#004ac6] text-white animate-pulse"
+                              : "bg-[#eaedff] text-[#004ac6] hover:bg-[#dbe1ff]"
+                          }`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleSpeakEnglish(line.english, line.id, index);
+                          }}
+                          type="button"
+                          title="영어 음성 듣기"
+                        >
+                          <span className="material-symbols-outlined text-[18px]">
+                            {isSpeaking ? "volume_up" : "volume_up"}
+                          </span>
+                        </button>
+                      </div>
                     </div>
 
                     <div className="flex flex-col gap-1 pl-8">
@@ -346,6 +424,161 @@ function TalkySheetContent() {
             </button>
           </div>
         </div>
+
+        {/* TalkyCat Deep Learning Bottom Sheet */}
+        {isBottomSheetOpen && selectedDialogueItem && (
+          <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 backdrop-blur-sm animate-in fade-in">
+            <div className="w-full max-w-[480px] bg-white rounded-t-[2.5rem] shadow-2xl p-6 flex flex-col gap-4 animate-in slide-in-from-bottom duration-300 max-h-[85vh] overflow-y-auto">
+              
+              {/* Header */}
+              <div className="flex items-center justify-between border-b border-[#eaedff] pb-3">
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 rounded-full bg-[#004ac6] text-white flex items-center justify-center p-1">
+                    <Image src="/talkycat-s.png" alt="TalkyCat" width={24} height={24} className="w-full h-full object-contain" />
+                  </div>
+                  <div>
+                    <h3 className="font-headline-md text-sm font-bold text-[#131b2e]">
+                      토키캣 심화 코칭 🐾
+                    </h3>
+                    <p className="font-body-sm text-[10px] text-[#737686]">
+                      선택한 대사 문장에 대해 무엇이든 물어보세요!
+                    </p>
+                  </div>
+                </div>
+                <button
+                  className="w-8 h-8 rounded-full bg-[#eaedff] text-[#434655] flex items-center justify-center hover:bg-[#e2e7ff] transition cursor-pointer"
+                  onClick={() => setIsBottomSheetOpen(false)}
+                  type="button"
+                >
+                  <span className="material-symbols-outlined text-[18px]">close</span>
+                </button>
+              </div>
+
+              {/* Selected Sentence Card */}
+              <div className="bg-[#f2f3ff] rounded-2xl p-3.5 flex flex-col gap-1 border border-[#e2e7ff]">
+                <div className="flex items-center justify-between">
+                  <span className="font-label-sm text-[10px] text-[#004ac6] font-bold">
+                    선택한 대사 문장
+                  </span>
+                  <button
+                    className="w-7 h-7 rounded-full bg-[#004ac6] text-white flex items-center justify-center hover:bg-[#2563eb] transition cursor-pointer shadow-sm"
+                    onClick={() => handleSpeakItem(selectedDialogueItem.english)}
+                    type="button"
+                    title="원본 문장 듣기"
+                  >
+                    <span className="material-symbols-outlined text-[15px]">volume_up</span>
+                  </button>
+                </div>
+                <p className="font-headline-sm text-xs font-bold text-[#131b2e]">
+                  &quot;{selectedDialogueItem.english}&quot;
+                </p>
+                <p className="font-body-sm text-[11px] text-[#737686]">
+                  {selectedDialogueItem.korean}
+                </p>
+              </div>
+
+              {/* One-touch Question Chips */}
+              <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
+                <button
+                  type="button"
+                  className="px-3 py-1.5 rounded-full bg-[#eaedff] hover:bg-[#dbe1ff] text-[#004ac6] font-label-sm text-xs font-semibold flex items-center gap-1 transition cursor-pointer whitespace-nowrap"
+                  onClick={() => fetchExplanation("alternative")}
+                >
+                  <span>💡 다른 표현</span>
+                </button>
+                <button
+                  type="button"
+                  className="px-3 py-1.5 rounded-full bg-[#eaedff] hover:bg-[#dbe1ff] text-[#004ac6] font-label-sm text-xs font-semibold flex items-center gap-1 transition cursor-pointer whitespace-nowrap"
+                  onClick={() => fetchExplanation("nuance")}
+                >
+                  <span>🧐 뉘앙스 차이</span>
+                </button>
+                <button
+                  type="button"
+                  className="px-3 py-1.5 rounded-full bg-[#eaedff] hover:bg-[#dbe1ff] text-[#004ac6] font-label-sm text-xs font-semibold flex items-center gap-1 transition cursor-pointer whitespace-nowrap"
+                  onClick={() => fetchExplanation("pronunciation")}
+                >
+                  <span>🗣️ 발음 꿀팁</span>
+                </button>
+              </div>
+
+              {/* Custom Question Input */}
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (!customQuestionInput.trim()) return;
+                  fetchExplanation("custom", customQuestionInput.trim());
+                  setCustomQuestionInput("");
+                }}
+                className="flex items-center gap-2"
+              >
+                <input
+                  type="text"
+                  className="flex-1 h-11 bg-[#faf8ff] border border-[#eaedff] focus:border-[#004ac6] focus:ring-2 focus:ring-[#004ac6]/20 rounded-xl px-3.5 text-xs text-[#131b2e] placeholder:text-gray-400 outline-none transition"
+                  placeholder="궁금한 점을 직접 물어보라냥! 🐾"
+                  value={customQuestionInput}
+                  onChange={(e) => setCustomQuestionInput(e.target.value)}
+                />
+                <button
+                  type="submit"
+                  className="w-11 h-11 bg-[#004ac6] text-white rounded-xl flex items-center justify-center hover:bg-[#2563eb] transition cursor-pointer flex-shrink-0 shadow-md shadow-[#004ac6]/20"
+                  title="질문 전송"
+                >
+                  <span className="material-symbols-outlined text-[18px]">send</span>
+                </button>
+              </form>
+
+              {/* Answer Box / Loading */}
+              <div className="bg-[#faf8ff] rounded-2xl p-4 border border-[#eaedff] flex flex-col gap-3 min-h-[160px] max-h-[260px] overflow-y-auto">
+                <div className="flex items-center gap-1.5 text-[#004ac6]">
+                  <span className="material-symbols-outlined text-[16px]">psychology</span>
+                  <span className="font-label-sm text-xs font-bold">토키캣의 코칭 답변</span>
+                </div>
+
+                {bottomSheetLoading ? (
+                  <div className="flex-1 flex flex-col items-center justify-center gap-2 py-8 text-[#737686]">
+                    <div className="w-6 h-6 rounded-full border-2 border-[#004ac6] border-t-transparent animate-spin" />
+                    <span className="font-body-sm text-xs">토키캣이 생각 중이다냥... 🐾</span>
+                  </div>
+                ) : bottomSheetItems.length === 0 && !bottomSheetSummary ? (
+                  <div className="flex-1 flex flex-col items-center justify-center text-center py-8 text-[#737686] gap-1">
+                    <span className="text-xl">🐾</span>
+                    <span className="font-body-sm text-xs">무엇이 궁금하냥? 아래 버튼을 눌러보라냥!</span>
+                  </div>
+                ) : (
+                  <div className="flex flex-col gap-2.5">
+                    {bottomSheetSummary && (
+                      <div className="bg-[#dbe1ff]/50 rounded-xl p-2.5 text-xs text-[#00174b] font-medium leading-relaxed">
+                        {bottomSheetSummary}
+                      </div>
+                    )}
+                    {bottomSheetItems.map((item, idx) => (
+                      <div key={idx} className="bg-white rounded-xl p-3 border border-[#eaedff] flex flex-col gap-1.5 shadow-sm">
+                        <div className="flex items-start justify-between gap-2">
+                          <span className="font-headline-sm text-xs font-bold text-[#131b2e]">
+                            &quot;{item.en}&quot;
+                          </span>
+                          <button
+                            className="w-7 h-7 rounded-full bg-[#eaedff] hover:bg-[#dbe1ff] text-[#004ac6] flex items-center justify-center transition cursor-pointer flex-shrink-0"
+                            onClick={() => handleSpeakItem(item.en)}
+                            type="button"
+                            title="이 예문 발음 듣기"
+                          >
+                            <span className="material-symbols-outlined text-[15px]">volume_up</span>
+                          </button>
+                        </div>
+                        <p className="font-body-sm text-[11px] text-[#737686] leading-relaxed">
+                          {item.ko}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+            </div>
+          </div>
+        )}
 
         {/* Toast Notification */}
         {toastMessage && (
