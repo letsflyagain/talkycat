@@ -551,7 +551,7 @@ export default function FreeTalkPage() {
   const micState = getMicButtonState();
 
   return (
-    <div className="min-h-screen bg-[#faf8ff] text-[#131b2e] flex flex-col items-center justify-start relative select-none">
+    <div className="min-h-[100dvh] bg-[#faf8ff] text-[#131b2e] flex flex-col items-center justify-start relative select-none">
       {/* Toast Notification */}
       <div
         className={`fixed top-20 left-1/2 transform -translate-x-1/2 z-50 px-4 py-2 bg-[#131b2e]/90 text-[#faf8ff] rounded-full shadow-xl transition-all duration-300 flex items-center gap-2 ${
@@ -563,14 +563,14 @@ export default function FreeTalkPage() {
       </div>
 
       {/* TalkyRoom Style Mobile View Container */}
-      <div className="w-full max-w-[480px] h-screen bg-white relative shadow-xl border-x border-[#eaedff]/60 flex flex-col justify-between overflow-hidden">
+      <div className="w-full max-w-[480px] h-[100dvh] bg-white relative shadow-xl border-x border-[#eaedff]/60 flex flex-col justify-between overflow-hidden">
 
         {/* 1. Top Header */}
-        <header className="w-full z-40 pt-safe bg-[#faf8ff]/90 backdrop-blur-md border-b border-[#eaedff]">
-          <div className="h-16 px-4 flex items-center justify-between">
+        <header className="w-full z-40 pt-safe bg-[#faf8ff]/90 backdrop-blur-md border-b border-[#eaedff] flex-shrink-0">
+          <div className="h-14 px-4 flex items-center justify-between">
             <div className="flex items-center gap-2">
               <button
-                className="w-10 h-10 rounded-full bg-[#eaedff] hover:bg-[#e2e7ff] text-[#131b2e] flex items-center justify-center transition-colors cursor-pointer active:scale-95"
+                className="w-9 h-9 rounded-full bg-[#eaedff] hover:bg-[#e2e7ff] text-[#131b2e] flex items-center justify-center transition-colors cursor-pointer active:scale-95"
                 onClick={() => {
                   clearWatchdog();
                   teardownSTT();
@@ -580,45 +580,45 @@ export default function FreeTalkPage() {
                 type="button"
                 aria-label="메인으로 돌아가기"
               >
-                <span className="material-symbols-outlined text-[20px]">arrow_back</span>
+                <span className="material-symbols-outlined text-[18px]">arrow_back</span>
               </button>
-              <div className="w-8 h-8 rounded-full overflow-hidden bg-[#dbe1ff] flex items-center justify-center">
-                <Image src="/talkycat-s.png" alt="TalkyCat" width={32} height={32} className="w-full h-full object-cover" />
+              <div className="w-7 h-7 rounded-full overflow-hidden bg-[#dbe1ff] flex items-center justify-center">
+                <Image src="/talkycat-s.png" alt="TalkyCat" width={28} height={28} className="w-full h-full object-cover" />
               </div>
               <h1 className="font-headline-sm text-sm font-bold text-[#131b2e] truncate max-w-[120px]">
                 FreeTalk
               </h1>
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5">
               <button
-                className="flex items-center gap-1 px-3 py-1.5 rounded-full bg-[#f2f3ff] hover:bg-[#e2e7ff] text-[#004ac6] font-label-sm text-xs shadow-sm transition-all active:scale-95 cursor-pointer"
+                className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#f2f3ff] hover:bg-[#e2e7ff] text-[#004ac6] font-label-sm text-xs shadow-sm transition-all active:scale-95 cursor-pointer"
                 onClick={() => setIsHistoryModalOpen(true)}
                 type="button"
                 aria-label="대화 기록 보기"
               >
-                <span className="material-symbols-outlined text-[16px]">history</span>
+                <span className="material-symbols-outlined text-[15px]">history</span>
                 <span>기록</span>
               </button>
-              <div className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-full bg-[#e2e7ff] text-[#131b2e] font-label-sm text-xs shadow-sm">
+              <div className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-[#e2e7ff] text-[#131b2e] font-label-sm text-xs shadow-sm">
                 <span>{nickname}님</span>
               </div>
             </div>
           </div>
         </header>
 
-        {/* 2. Central Single Focus Card Area */}
-        <main className="flex-1 flex flex-col items-center justify-center px-4 py-2 relative overflow-y-auto bg-gradient-to-b from-[#dbe1ff]/15 via-white to-[#f2f3ff]/30 pb-44">
+        {/* 2. Central Single Focus Card Area with Compact Spacing */}
+        <main className="flex-1 flex flex-col items-center justify-center px-4 py-1.5 relative overflow-y-auto bg-gradient-to-b from-[#dbe1ff]/15 via-white to-[#f2f3ff]/35 pb-40">
           {/* Status Pill */}
-          <div className="mb-2 flex items-center gap-1.5 px-4 py-1.5 rounded-full bg-white shadow-md border border-[#eaedff]">
-            <span className="material-symbols-outlined text-[#004ac6] text-[16px] animate-bounce">graphic_eq</span>
+          <div className="mb-1.5 flex items-center gap-1 px-3 py-1 rounded-full bg-white shadow-md border border-[#eaedff]">
+            <span className="material-symbols-outlined text-[#004ac6] text-[15px] animate-bounce">graphic_eq</span>
             <span className="font-label-sm text-xs text-[#004ac6] font-bold">{statusText}</span>
           </div>
 
           {/* Top Topic Banner with Reset Button */}
-          <div className="w-full max-w-md bg-white/90 backdrop-blur-md border border-amber-200/80 rounded-2xl px-4 py-2.5 shadow-sm mx-4 mb-3 flex items-center justify-between">
+          <div className="w-full max-w-md bg-white/90 backdrop-blur-md border border-amber-200/85 rounded-xl px-3.5 py-2 shadow-xs mx-4 mb-2 flex items-center justify-between">
             <div className="flex items-center gap-1.5 min-w-0 pr-2">
-              <span className="text-sm">📌</span>
+              <span className="text-xs">📌</span>
               <div className="flex flex-col min-w-0">
                 <span className="text-[10px] text-[#737686] font-bold">대화 주제</span>
                 <span className="text-[#004ac6] font-bold text-xs truncate max-w-[170px]">
@@ -627,7 +627,7 @@ export default function FreeTalkPage() {
               </div>
             </div>
             <button
-              className="bg-amber-100 hover:bg-amber-200 text-amber-800 text-xs font-bold px-3 py-1.5 rounded-full shadow-xs active:scale-95 transition-all cursor-pointer flex items-center gap-1 flex-shrink-0"
+              className="bg-amber-100 hover:bg-amber-200 text-amber-800 text-[11px] font-bold px-2.5 py-1 rounded-full shadow-xs active:scale-95 transition-all cursor-pointer flex items-center gap-1 flex-shrink-0"
               onClick={handleResetConversation}
               type="button"
             >
@@ -635,49 +635,49 @@ export default function FreeTalkPage() {
             </button>
           </div>
 
-          {/* Character Avatar with Pulsing Aura Rings */}
-          <div className="relative flex items-center justify-center w-36 h-36 sm:w-44 sm:h-44 mb-4">
+          {/* Character Avatar with Pulsing Aura Rings (Compact) */}
+          <div className="relative flex items-center justify-center w-28 h-28 sm:w-36 sm:h-36 mb-2">
             <div className={`absolute inset-0 rounded-full bg-[#2563eb]/20 animate-ping ${isThinking || isSpeakingState ? "opacity-90" : "opacity-40"}`}></div>
-            <div className="absolute -inset-2 rounded-full bg-[#004ac6]/10 animate-pulse"></div>
-            <div className="relative w-32 h-32 sm:w-40 sm:h-40 rounded-full overflow-hidden shadow-xl bg-white p-2 flex items-center justify-center border-2 border-[#dbe1ff]">
+            <div className="absolute -inset-1.5 rounded-full bg-[#004ac6]/10 animate-pulse"></div>
+            <div className="relative w-24 h-24 sm:w-32 sm:h-32 rounded-full overflow-hidden shadow-lg bg-white p-1.5 flex items-center justify-center border-2 border-[#dbe1ff]">
               <Image
                 src="/talkycat-m.png"
                 alt="TalkyCat Avatar"
-                width={160}
-                height={160}
+                width={128}
+                height={128}
                 className="w-full h-full object-cover select-none pointer-events-none transform transition-transform duration-300"
                 priority
               />
             </div>
           </div>
 
-          {/* Central Focus Card */}
-          <div className="w-full max-w-md bg-white rounded-3xl p-5 shadow-lg border border-[#eaedff] flex flex-col gap-3 relative transition-all duration-300">
+          {/* Central Focus Card (Compact Padding) */}
+          <div className="w-full max-w-md bg-white rounded-2xl p-4 shadow-md border border-[#eaedff] flex flex-col gap-2.5 relative transition-all duration-300">
             {/* Speaker Badge */}
             <div className="flex items-center justify-between">
-              <span className={`px-2.5 py-1 rounded-full font-label-sm text-[11px] font-bold ${isListening ? "bg-emerald-100 text-emerald-800" : "bg-[#dbe1ff] text-[#00174b]"}`}>
+              <span className={`px-2 py-0.5 rounded-full font-label-sm text-[11px] font-bold ${isListening ? "bg-emerald-100 text-emerald-800" : "bg-[#dbe1ff] text-[#00174b]"}`}>
                 {isListening ? "나 🎤 (마이크 켜짐)" : "토키캣 🐾"}
               </span>
               <button
-                className="w-8 h-8 rounded-full bg-[#f2f3ff] hover:bg-[#e2e7ff] text-[#004ac6] flex items-center justify-center transition-colors cursor-pointer active:scale-95 shadow-sm"
+                className="w-7 h-7 rounded-full bg-[#f2f3ff] hover:bg-[#e2e7ff] text-[#004ac6] flex items-center justify-center transition-colors cursor-pointer active:scale-95 shadow-xs"
                 onClick={() => {
                   if (latestAssistantMsg) speakText(latestAssistantMsg.messageEn, 1.0, () => startListeningImmediate());
                 }}
                 title="다시 듣기"
                 type="button"
               >
-                <span className="material-symbols-outlined text-[18px]">volume_up</span>
+                <span className="material-symbols-outlined text-[16px]">volume_up</span>
               </button>
             </div>
 
             {/* English Utterance */}
-            <p className="font-headline-sm text-lg sm:text-xl font-bold text-[#131b2e] leading-snug text-center">
+            <p className="font-headline-sm text-base sm:text-lg font-bold text-[#131b2e] leading-snug text-center">
               {isThinking ? "Thinking of a warm reply..." : latestAssistantMsg ? latestAssistantMsg.messageEn : "Loading..."}
             </p>
 
             {/* Korean Translation */}
             {showKorean && (
-              <p className="font-body-sm text-xs text-[#434655] text-center border-t border-[#eaedff]/60 pt-2">
+              <p className="font-body-sm text-[11px] text-[#434655] text-center border-t border-[#eaedff]/60 pt-1.5">
                 {isThinking ? "토키캣이 답변을 준비 중입니다." : latestAssistantMsg ? latestAssistantMsg.messageKo : ""}
               </p>
             )}
@@ -685,40 +685,40 @@ export default function FreeTalkPage() {
             {/* Silent Correction Chip if available */}
             {latestAssistantMsg?.silentCorrection && (
               <button
-                className="self-center mt-1 flex items-center gap-1 px-3 py-1 rounded-full bg-amber-50 border border-amber-200 text-amber-700 hover:bg-amber-100 transition-all text-xs font-semibold shadow-sm cursor-pointer"
+                className="self-center mt-0.5 flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-amber-50 border border-amber-200 text-amber-700 hover:bg-amber-100 transition-all text-[11px] font-semibold shadow-xs cursor-pointer"
                 onClick={() => openCorrectionModal(latestAssistantMsg.silentCorrection!)}
                 type="button"
               >
-                <span className="material-symbols-outlined text-[14px] text-amber-500 fill-1">lightbulb</span>
+                <span className="material-symbols-outlined text-[13px] text-amber-500 fill-1">lightbulb</span>
                 <span>💡 토키캣의 귓속말 팁 보기</span>
               </button>
             )}
           </div>
 
           {/* Real-time STT Live Feedback or Thinking Indicator */}
-          <div className="mt-4 w-full max-w-md flex flex-col items-center">
+          <div className="mt-2.5 w-full max-w-md flex flex-col items-center">
             {isThinking ? (
-              <div className="flex items-center gap-2 px-4 py-2 rounded-2xl bg-[#004ac6]/10 text-[#004ac6] text-xs font-semibold animate-pulse">
-                <span className="material-symbols-outlined text-[16px] animate-spin">progress_activity</span>
+              <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#004ac6]/10 text-[#004ac6] text-xs font-semibold animate-pulse">
+                <span className="material-symbols-outlined text-[15px] animate-spin">progress_activity</span>
                 <span>토키캣이 생각 중이다냥... 🐾</span>
               </div>
             ) : isListening && recognizedText ? (
-              <div className="w-full bg-[#004ac6]/10 border border-[#004ac6]/30 text-[#004ac6] rounded-2xl px-4 py-2.5 text-center text-xs font-medium shadow-sm animate-fade-in">
+              <div className="w-full bg-[#004ac6]/10 border border-[#004ac6]/30 text-[#004ac6] rounded-xl px-3.5 py-2 text-center text-xs font-medium shadow-xs animate-fade-in">
                 &ldquo;{recognizedText}&rdquo; <span className="text-[10px] opacity-75">(인식 중...)</span>
               </div>
             ) : null}
           </div>
         </main>
 
-        {/* 3. Unified Bottom Footer (Suggested Replies + Auxiliary 3 Quick Buttons + Main 3 Control Buttons) */}
-        <footer className="absolute bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-md border-t border-[#eaedff] shadow-[0_-4px_20px_rgba(0,0,0,0.06)] p-3 pb-safe flex flex-col gap-2.5">
+        {/* 3. Unified Bottom Footer with Safe Area Inset and 2-Tier Deck */}
+        <footer className="absolute bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-md border-t border-[#eaedff] shadow-[0_-4px_20px_rgba(0,0,0,0.06)] px-3 pt-2 pb-[max(1rem,env(safe-area-inset-bottom))] flex flex-col gap-2 max-w-[480px] mx-auto flex-shrink-0">
           {/* Suggested Replies Chips (When available and not thinking) */}
           {currentSuggestedReplies.length > 0 && !isThinking && !isSpeakingState && (
-            <div className="flex flex-wrap justify-center gap-1.5 w-full">
+            <div className="flex flex-wrap justify-center gap-1 w-full">
               {currentSuggestedReplies.map((reply, idx) => (
                 <button
                   key={idx}
-                  className="px-3 py-1.5 rounded-full bg-[#f2f3ff] border border-[#004ac6]/30 text-[#004ac6] hover:bg-[#004ac6] hover:text-white text-xs font-bold shadow-sm transition-all active:scale-95 cursor-pointer flex items-center gap-1"
+                  className="px-2.5 py-1 rounded-full bg-[#f2f3ff] border border-[#004ac6]/30 text-[#004ac6] hover:bg-[#004ac6] hover:text-white text-[11px] font-bold shadow-xs transition-all active:scale-95 cursor-pointer flex items-center gap-1"
                   onClick={() => handleSuggestedClick(reply)}
                   type="button"
                 >
@@ -731,7 +731,7 @@ export default function FreeTalkPage() {
           {/* Auxiliary Quick Buttons Row (3 columns: 천천히, 쉽게 설명, 대화 리셋) */}
           <div className="w-full max-w-[480px] mx-auto grid grid-cols-3 gap-1.5">
             <button
-              className="h-10 px-2 rounded-xl bg-white border border-[#c3c6d7]/60 shadow-sm flex items-center justify-center gap-1 text-[#131b2e] hover:bg-[#f2f3ff] active:scale-95 transition-all cursor-pointer"
+              className="h-9 px-2 rounded-xl bg-white border border-[#c3c6d7]/60 shadow-xs flex items-center justify-center gap-1 text-[#131b2e] hover:bg-[#f2f3ff] active:scale-95 transition-all cursor-pointer"
               onClick={handleSlowReplay}
               type="button"
             >
@@ -739,7 +739,7 @@ export default function FreeTalkPage() {
               <span className="font-label-sm text-[11px] font-semibold truncate">천천히</span>
             </button>
             <button
-              className="h-10 px-2 rounded-xl bg-white border border-[#c3c6d7]/60 shadow-sm flex items-center justify-center gap-1 text-[#131b2e] hover:bg-[#f2f3ff] active:scale-95 transition-all cursor-pointer"
+              className="h-9 px-2 rounded-xl bg-white border border-[#c3c6d7]/60 shadow-xs flex items-center justify-center gap-1 text-[#131b2e] hover:bg-[#f2f3ff] active:scale-95 transition-all cursor-pointer"
               onClick={handleSimpleExplanation}
               type="button"
             >
@@ -747,7 +747,7 @@ export default function FreeTalkPage() {
               <span className="font-label-sm text-[11px] font-semibold truncate">쉽게 설명</span>
             </button>
             <button
-              className="h-10 px-2 rounded-xl bg-amber-50 border border-amber-300/80 shadow-sm flex items-center justify-center gap-1 text-amber-900 hover:bg-amber-100 active:scale-95 transition-all cursor-pointer font-bold"
+              className="h-9 px-2 rounded-xl bg-amber-50 border border-amber-300/80 shadow-xs flex items-center justify-center gap-1 text-amber-900 hover:bg-amber-100 active:scale-95 transition-all cursor-pointer font-bold"
               onClick={handleResetConversation}
               type="button"
             >
@@ -757,42 +757,42 @@ export default function FreeTalkPage() {
           </div>
 
           {/* Main Control Deck (Left: Replay, Center: Revamped 4-State Mic Button, Right: End Call) */}
-          <div className="w-full max-w-[480px] mx-auto flex items-center justify-around px-6 py-2.5 rounded-2xl bg-[#f2f3ff]/80 border border-[#eaedff] shadow-sm">
+          <div className="w-full max-w-[480px] mx-auto flex items-center justify-around px-4 py-2 rounded-2xl bg-[#f2f3ff]/80 border border-[#eaedff] shadow-xs">
             <div className="flex flex-col items-center">
               <button
-                className="w-12 h-12 rounded-full bg-white text-[#004ac6] flex items-center justify-center hover:bg-[#e2e7ff] active:scale-90 transition shadow-sm cursor-pointer"
+                className="w-11 h-11 rounded-full bg-white text-[#004ac6] flex items-center justify-center hover:bg-[#e2e7ff] active:scale-90 transition shadow-xs cursor-pointer"
                 onClick={() => {
                   if (latestAssistantMsg) speakText(latestAssistantMsg.messageEn, 1.0, () => startListeningImmediate());
                 }}
                 type="button"
                 aria-label="다시듣기"
               >
-                <span className="material-symbols-outlined text-[22px]">replay</span>
+                <span className="material-symbols-outlined text-[20px]">replay</span>
               </button>
-              <span className="font-label-sm text-[10px] text-[#434655] mt-1 font-bold">다시듣기</span>
+              <span className="font-label-sm text-[10px] text-[#434655] mt-0.5 font-bold">다시듣기</span>
             </div>
 
             {/* Revamped Center Microphone Button with State Machine */}
             <div className="flex flex-col items-center">
               <button
-                className={`w-16 h-16 rounded-full text-white flex items-center justify-center active:scale-95 transition-transform cursor-pointer ${micState.bgStyle}`}
+                className={`w-14 h-14 rounded-full text-white flex items-center justify-center active:scale-95 transition-transform cursor-pointer ${micState.bgStyle}`}
                 onClick={handleMainMicClick}
                 type="button"
                 aria-label="마이크 제어 및 전송"
                 disabled={isThinking || isSpeakingState}
               >
-                <span className={`material-symbols-outlined text-[28px] ${micState.isSpinning ? "animate-spin" : ""}`}>
+                <span className={`material-symbols-outlined text-[26px] ${micState.isSpinning ? "animate-spin" : ""}`}>
                   {micState.icon}
                 </span>
               </button>
-              <span className="font-label-sm text-[10px] text-[#004ac6] font-semibold mt-1 whitespace-nowrap">
+              <span className="font-label-sm text-[10px] text-[#004ac6] font-semibold mt-0.5 whitespace-nowrap">
                 {micState.label}
               </span>
             </div>
 
             <div className="flex flex-col items-center">
               <button
-                className="w-12 h-12 rounded-full bg-[#ffdad6] text-[#93000a] flex items-center justify-center hover:bg-[#ba1a1a] hover:text-white active:scale-90 transition shadow-sm cursor-pointer"
+                className="w-11 h-11 rounded-full bg-[#ffdad6] text-[#93000a] flex items-center justify-center hover:bg-[#ba1a1a] hover:text-white active:scale-90 transition shadow-xs cursor-pointer"
                 onClick={() => {
                   clearWatchdog();
                   teardownSTT();
@@ -802,9 +802,9 @@ export default function FreeTalkPage() {
                 type="button"
                 aria-label="통화 종료"
               >
-                <span className="material-symbols-outlined text-[22px]">call_end</span>
+                <span className="material-symbols-outlined text-[20px]">call_end</span>
               </button>
-              <span className="font-label-sm text-[10px] text-[#93000a] font-semibold mt-1">종료</span>
+              <span className="font-label-sm text-[10px] text-[#93000a] font-semibold mt-0.5">종료</span>
             </div>
           </div>
         </footer>
