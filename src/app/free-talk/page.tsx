@@ -234,12 +234,14 @@ export default function FreeTalkPage() {
     const updatedMessages = isResetCall ? [] : [...messagesRef.current, userMsg];
     if (!isResetCall) {
       setMessages(updatedMessages);
+    } else {
+      setMessages([]);
     }
     setRecognizedText("");
     latestTranscriptRef.current = "";
 
     try {
-      const historyPayload = updatedMessages.map((m) => ({
+      const historyPayload = isResetCall ? [] : updatedMessages.map((m) => ({
         role: m.role,
         text: m.messageEn
       }));
@@ -249,7 +251,7 @@ export default function FreeTalkPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           history: historyPayload,
-          userMessage: trimmed,
+          userMessage: isResetCall ? "" : trimmed,
           anchorTopic: anchorTopicRef.current,
           isReset: isResetCall
         })
@@ -260,7 +262,8 @@ export default function FreeTalkPage() {
       setIsThinking(false);
 
       if (data.success) {
-        if (!anchorTopicRef.current && data.extractedTopic) {
+        const isDefaultTopic = !anchorTopicRef.current || anchorTopicRef.current === 'Casual Chat' || anchorTopicRef.current === 'Free Talk' || anchorTopicRef.current === 'General Chat';
+        if (data.extractedTopic && isDefaultTopic) {
           setAnchorTopic(data.extractedTopic);
         }
 
@@ -499,7 +502,12 @@ export default function FreeTalkPage() {
       window.speechSynthesis.cancel();
     }
     showToast(`현재 주제('${anchorTopic || "새로운 대화"}')로 첫 질문부터 다시 시작한다냥! 🐾`);
-    sendUserMessageToAPI("Let's restart conversation on this topic.", true);
+    
+    // 1. UI 및 메모리 히스토리 즉시 초기화
+    setMessages([]);
+
+    // 2. API 호출 시 상태 변수가 아닌 빈 배열 리터럴([])을 직접 전달
+    sendUserMessageToAPI("", true);
   };
 
   // Get current active assistant message

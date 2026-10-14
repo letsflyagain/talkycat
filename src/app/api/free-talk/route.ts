@@ -14,17 +14,19 @@ export async function POST(request: Request) {
     parsedAnchorTopic = anchorTopic;
 
     const apiKey = process.env.GEMINI_API_KEY;
+    const isDefaultTopic = !anchorTopic || anchorTopic === "Casual Chat" || anchorTopic === "Free Talk" || anchorTopic === "General Chat";
+
     if (!apiKey) {
       return NextResponse.json({
         success: true,
-        messageEn: anchorTopic ? `Let's talk about ${anchorTopic} again! What are your thoughts?` : "Hi there! What topic would you like to talk about today?",
-        messageKo: anchorTopic ? `${anchorTopic}에 대해 다시 이야기해 보자! 네 생각은 어때?` : "안녕! 오늘 어떤 주제로 이야기해볼까?",
+        messageEn: !isDefaultTopic ? `Let's talk about ${anchorTopic} again! What are your thoughts?` : "Hi there! What topic would you like to talk about today?",
+        messageKo: !isDefaultTopic ? `${anchorTopic}에 대해 다시 이야기해 보자! 네 생각은 어때?` : "안녕! 오늘 어떤 주제로 이야기해볼까?",
         suggestedReplies: [
           "I want to talk about my weekend plans.",
           "Let's talk about my favorite food!"
         ],
         silentCorrection: null,
-        extractedTopic: anchorTopic || "General Chat"
+        extractedTopic: !isDefaultTopic ? anchorTopic : "General Chat"
       });
     }
 
@@ -37,9 +39,6 @@ export async function POST(request: Request) {
 2. 한 번에 딱 하나의 간단한 질문만 하고 사용자의 답변을 기다려주세요.
 3. 사용자가 문법이나 표현 실수를 하더라도 대화 중 직접 지적하거나 교정하지 마세요. 대화는 자연스럽게 이어가되, 교정 사항은 오직 silentCorrection 필드에만 담아주세요.
 4. 자연스러운 티키타카를 위해 영문 답변 길이는 2~3문장 이내로 짧게 유지해주세요.
-5. 대화의 첫 시작(history가 비어있거나 userMessage가 없는 경우 또는 isReset인 경우):
-   - If anchorTopic is not set, use: "Hi there! What topic would you like to talk about today?"
-   - If anchorTopic IS set (e.g. conversation reset), greet warmly and ask a fresh opening question strictly about "${anchorTopic}".
 
 [CRITICAL: NO EMOJIS IN messageEn]
 - The \`messageEn\` field must contain ONLY pure, natural spoken English text.
@@ -47,14 +46,20 @@ export async function POST(request: Request) {
 - Korean translation (\`messageKo\`) and other UI text may contain friendly emojis, but \`messageEn\` must be 100% pure English alphabet and punctuation (. , ? !).
 
 ${
-  anchorTopic
+  isReset
+    ? `[CRITICAL RESET POLICY]
+- The user has completely reset the conversation for the topic: "${anchorTopic || "General Chat"}".
+- Ignore all previous conversation history completely and treat context as empty.
+- Greet warmly and ask a fresh, engaging, opening question strictly about "${anchorTopic || "General Chat"}".`
+    : !isDefaultTopic
     ? `[CRITICAL TOPIC ANCHOR POLICY]
 - The fixed main topic of this entire session is: "${anchorTopic}".
 - The user's input comes from mobile speech recognition, which frequently mishears words.
 - Even if the user's utterance contains weird, nonsensical, or out-of-context words, NEVER switch to a different topic.
 - Always interpret the utterance within the context of "${anchorTopic}" and keep your next response and single question focused strictly on "${anchorTopic}".`
-    : `[TOPIC EXTRACTION]
-- Since this is the user's response to your opening question, identify and extract the core topic keyword or phrase from their reply (e.g. "Coffee & Cafe", "Travel & Vacation", "Movies & Drama") and return it in the 'extractedTopic' field.`
+    : `[TOPIC EXTRACTION RULE]
+- Since this is the initial phase or user's response to the opening question, you MUST identify and extract the core topic keyword or phrase from their reply as a clear noun phrase within 2-3 words (e.g., "Coffee & Cafe", "Movies", "Weekend Relaxation", "Travel").
+- NEVER return generic default values like "Casual Chat" or "Free Talk" when user provides a specific response. Always extract a precise topic keyword into 'extractedTopic'.`
 }
 
 [출력 JSON 규격]
@@ -63,24 +68,26 @@ ${
   "messageKo": "초보자를 위한 친절한 한국어 번역 (이모지 가능)",
   "suggestedReplies": ["사용자가 말하기 쉬운 힌트 답변 1", "힌트 답변 2"],
   "silentCorrection": "사용자 발화에 명백한 실수가 있었을 때만 채우는 부드러운 교정 팁 (없으면 null)",
-  "extractedTopic": "주제 키워드 (첫 턴에만 추출하여 반환, 이후엔 기존 anchorTopic 유지)"
+  "extractedTopic": "주제 키워드 (2~3단어 이내의 명확한 명사형 키워드, 예: Coffee & Cafe, Movies, Travel)"
 }
 `;
 
-    // Sliding window: keep only the most recent 4 turns (2 pairs)
+    // Sliding window: keep only the most recent 4 turns (2 pairs), completely ignored if isReset
     const recentHistory: HistoryItem[] = isReset ? [] : (Array.isArray(history) ? history.slice(-4) : []);
 
     let conversationContext = "";
-    for (const item of recentHistory) {
-      conversationContext += `${item.role === "assistant" ? "TalkyCat" : "User"}: ${item.text}\n`;
+    if (!isReset) {
+      for (const item of recentHistory) {
+        conversationContext += `${item.role === "assistant" ? "TalkyCat" : "User"}: ${item.text}\n`;
+      }
     }
 
     const prompt = `
-${anchorTopic ? `[Current Session Anchor Topic: ${anchorTopic}]` : ""}
-${isReset ? "[Action: Reset conversation and start fresh with a new question about the anchor topic]" : ""}
-${conversationContext ? `[Recent Conversation History]\n${conversationContext}\n` : ""}
+${!isDefaultTopic ? `[Current Session Anchor Topic: ${anchorTopic}]` : ""}
+${isReset ? `[Action: Reset conversation completely. Start fresh with a new question about "${anchorTopic || "General Chat"}".]` : ""}
+${conversationContext && !isReset ? `[Recent Conversation History]\n${conversationContext}\n` : ""}
 [Current User Message]
-${userMessage ? userMessage : "(Initial start of conversation)"}
+${userMessage ? userMessage : "(Initial start of conversation or reset)"}
 
 Task: Respond as TalkyCat adhering strictly to the system instruction and outputting valid JSON matching the exact schema.
 `;
@@ -107,41 +114,42 @@ Task: Respond as TalkyCat adhering strictly to the system instruction and output
       parsed = JSON.parse(cleaned);
     } catch {
       parsed = {
-        messageEn: anchorTopic ? `Let's talk about ${anchorTopic} again! What are your thoughts?` : "That sounds interesting! Tell me more about it.",
-        messageKo: anchorTopic ? `${anchorTopic}에 대해 다시 이야기해 보자! 네 생각은 어때?` : "정말 흥미롭다! 그에 대해 더 말해줘.",
+        messageEn: !isDefaultTopic ? `Let's talk about ${anchorTopic} again! What are your thoughts?` : "That sounds interesting! Tell me more about it.",
+        messageKo: !isDefaultTopic ? `${anchorTopic}에 대해 다시 이야기해 보자! 네 생각은 어때?` : "정말 흥미롭다! 그에 대해 더 말해줘.",
         suggestedReplies: [
           "It's really fun and interesting.",
           "I usually talk about this."
         ],
         silentCorrection: null,
-        extractedTopic: anchorTopic || "General Chat"
+        extractedTopic: !isDefaultTopic ? anchorTopic : "General Chat"
       };
     }
 
     return NextResponse.json({
       success: true,
-      messageEn: parsed.messageEn || (anchorTopic ? `Let's talk about ${anchorTopic} again! What are your thoughts?` : "Hi there! What topic would you like to talk about today?"),
-      messageKo: parsed.messageKo || (anchorTopic ? `${anchorTopic}에 대해 다시 이야기해 보자!` : "안녕! 오늘 어떤 주제로 이야기해볼까?"),
+      messageEn: parsed.messageEn || (!isDefaultTopic ? `Let's talk about ${anchorTopic} again! What are your thoughts?` : "Hi there! What topic would you like to talk about today?"),
+      messageKo: parsed.messageKo || (!isDefaultTopic ? `${anchorTopic}에 대해 다시 이야기해 보자!` : "안녕! 오늘 어떤 주제로 이야기해볼까?"),
       suggestedReplies: Array.isArray(parsed.suggestedReplies) && parsed.suggestedReplies.length > 0 ? parsed.suggestedReplies : [
         "I want to talk more about this.",
         "That's so interesting!"
       ],
       silentCorrection: parsed.silentCorrection || null,
-      extractedTopic: parsed.extractedTopic || anchorTopic || "General Chat"
+      extractedTopic: parsed.extractedTopic || (!isDefaultTopic ? anchorTopic : "General Chat")
     });
   } catch (err: unknown) {
     const errMessage = err instanceof Error ? err.message : String(err);
     console.error("[TalkyCat API Error] free-talk failed:", errMessage);
+    const isDefault = !parsedAnchorTopic || parsedAnchorTopic === "Casual Chat" || parsedAnchorTopic === "Free Talk" || parsedAnchorTopic === "General Chat";
     return NextResponse.json({
       success: true,
-      messageEn: parsedAnchorTopic ? `Let's talk about ${parsedAnchorTopic} again! What are your thoughts?` : "Oh, my paws got tangled! Let's talk again. What are you up to?",
-      messageKo: parsedAnchorTopic ? `${parsedAnchorTopic}에 대해 다시 이야기해 보자!` : "이런, 발이 엉켰네! 다시 이야기해 보자. 뭐 하고 지냈어?",
+      messageEn: !isDefault ? `Let's talk about ${parsedAnchorTopic} again! What are your thoughts?` : "Oh, my paws got tangled! Let's talk again. What are you up to?",
+      messageKo: !isDefault ? `${parsedAnchorTopic}에 대해 다시 이야기해 보자!` : "이런, 발이 엉켰네! 다시 이야기해 보자. 뭐 하고 지냈어?",
       suggestedReplies: [
         "I was resting at home.",
         "I went outside for a walk."
       ],
       silentCorrection: null,
-      extractedTopic: parsedAnchorTopic || "General Chat"
+      extractedTopic: !isDefault ? parsedAnchorTopic : "General Chat"
     });
   }
 }
