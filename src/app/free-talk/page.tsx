@@ -201,17 +201,28 @@ export default function FreeTalkPage() {
     const handleFinish = () => {
       isSpeakingRef.current = false;
       setIsSpeakingState(false);
-      // 450ms cooldown delay to prevent speaker echo re-triggering STT
+      // 스피커 잔향 및 에코가 완전히 소멸된 후 마이크 시작 (800ms)
       setTimeout(() => {
-        if (onEnded) onEnded();
-      }, 450);
+        if (onEnded) {
+          onEnded();
+        } else {
+          startListeningImmediate();
+        }
+      }, 800);
     };
 
     utterance.onend = handleFinish;
     utterance.onerror = handleFinish;
 
     window.speechSynthesis.speak(utterance);
-  }, [teardownSTT]);
+  }, [teardownSTT, startListeningImmediate]);
+
+  const isValidSpeech = (text: string) => {
+    const cleaned = text.trim().toLowerCase();
+    if (cleaned.length < 4) return false; // 3글자 이하는 노이즈로 간주
+    if (['yeah', 'yes', 'no', 'ok', 'okay'].includes(cleaned)) return true; // 짧아도 유효한 대답은 허용
+    return cleaned.split(/\s+/).length >= 1;
+  };
 
   const sendUserMessageToAPI = useCallback(async (text: string, isResetCall: boolean = false) => {
     const trimmed = (text || "").trim();
@@ -370,12 +381,20 @@ export default function FreeTalkPage() {
         }
         silenceTimerRef.current = setTimeout(() => {
           if (isRecognizingRef.current && currentTranscript && !isSpeakingRef.current && !isThinking && !isProcessingRef.current) {
-            sendUserMessageToAPI(currentTranscript);
+            if (isValidSpeech(currentTranscript)) {
+              sendUserMessageToAPI(currentTranscript);
+            } else {
+              console.log("[보안 가드] 노이즈 또는 무효한 짧은 발화로 판정되어 자동 전송을 무시합니다:", currentTranscript);
+            }
           }
         }, 2500);
 
         if (finalTranscript && !isSpeakingRef.current && !isThinking && !isProcessingRef.current) {
-          sendUserMessageToAPI(finalTranscript);
+          if (isValidSpeech(finalTranscript)) {
+            sendUserMessageToAPI(finalTranscript);
+          } else {
+            console.log("[보안 가드] 노이즈 또는 무효한 최종 발화로 판정되어 자동 전송을 무시합니다:", finalTranscript);
+          }
         }
       };
 
@@ -388,7 +407,6 @@ export default function FreeTalkPage() {
         setIsListening(false);
       };
 
-      // SANITIZED: Never call sendUserMessageToAPI from onend
       recognition.onend = () => {
         isRecognizingRef.current = false;
       };

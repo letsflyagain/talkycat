@@ -31,6 +31,12 @@ export default function Home() {
   const [isConfigModalOpen, setIsConfigModalOpen] = useState(false);
   const [customTopicInput, setCustomTopicInput] = useState("");
 
+  // Import Script States
+  const [isImportModalOpen, setIsImportModalOpen] = useState(false);
+  const [importText, setImportText] = useState("");
+  const [isImporting, setIsImporting] = useState(false);
+  const [importToastVisible, setImportToastVisible] = useState(false);
+
   const [isGenerating, setIsGenerating] = useState(false);
   const [toastVisible, setToastVisible] = useState(false);
   const [activeTab, setActiveTab] = useState<"전체" | "생활영어" | "비즈니스" | "여행/식당" | "영화/드라마 명장면">("전체");
@@ -39,6 +45,11 @@ export default function Home() {
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
   const [deleteToastVisible, setDeleteToastVisible] = useState(false);
   const [exitToastVisible, setExitToastVisible] = useState(false);
+
+  // PDF Download States
+  const [downloadingId, setDownloadingId] = useState<string | null>(null);
+  const [pdfPromptScript, setPdfPromptScript] = useState<ScriptListItem | null>(null);
+
   const lastBackPressTimeRef = useRef(0);
   const longPressTimerRef = useRef<NodeJS.Timeout | null>(null);
   const isLongPressRef = useRef(false);
@@ -118,6 +129,168 @@ export default function Home() {
     setTimeout(() => {
       setDeleteToastVisible(false);
     }, 2500);
+  };
+
+  const confirmDeleteFromPDFPrompt = () => {
+    if (!pdfPromptScript) return;
+    try {
+      localStorage.removeItem(`talkycat_script_${pdfPromptScript.id}`);
+      const saved = localStorage.getItem("talkycat_scripts");
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          const updated = parsed.filter((s: ScriptListItem) => s.id !== pdfPromptScript.id);
+          localStorage.setItem("talkycat_scripts", JSON.stringify(updated));
+          setScripts(updated);
+        }
+      }
+    } catch (e) {
+      console.error("Failed to delete script", e);
+    }
+    setPdfPromptScript(null);
+    setDeleteToastVisible(true);
+    setTimeout(() => {
+      setDeleteToastVisible(false);
+    }, 2500);
+  };
+
+  const handleDownloadPDF = async (item: ScriptListItem) => {
+    setDownloadingId(item.id);
+    try {
+      let scriptData: GeneratedScript | null = null;
+      try {
+        const saved = localStorage.getItem(`talkycat_script_${item.id}`);
+        if (saved) {
+          scriptData = JSON.parse(saved);
+        }
+      } catch (e) {
+        console.warn("Failed to load full script from localStorage", e);
+      }
+
+      if (!scriptData) {
+        scriptData = {
+          id: item.id,
+          date: item.date,
+          category: item.category,
+          title: item.title,
+          mission: `${item.title} 영어 대화 연습하기`,
+          corePatterns: [
+            { pattern: "Can you help me with ~?", meaning: "~를 도와주시겠어요?" },
+            { pattern: "I'd like to ~", meaning: "~하고 싶습니다." }
+          ],
+          catTip: "자연스러운 억양으로 소리 내어 읽어보라냥! 🐾",
+          dialogue: [
+            { id: 1, speaker: "user", speakerName: "나", english: "Hello, I need some assistance.", korean: "안녕하세요, 도움이 필요합니다." },
+            { id: 2, speaker: "cat", speakerName: "토키캣", english: "Sure, what can I help you with?", korean: "물론이죠, 무엇을 도와드릴까요?" }
+          ],
+          completedCount: item.completedCount
+        };
+      }
+
+      const element = document.createElement("div");
+      element.innerHTML = `
+        <div style="font-family: 'Helvetica', 'Arial', sans-serif; color: #131b2e; padding: 24px; background: #ffffff; max-width: 800px; margin: 0 auto;">
+          <h1 style="font-size: 22px; font-weight: bold; margin-bottom: 6px; color: #004ac6;">${scriptData.title}</h1>
+          <div style="font-size: 12px; color: #666666; margin-bottom: 10px;">카테고리: ${scriptData.category} | 생성일: ${scriptData.date}</div>
+          <div style="border-bottom: 2px solid #d1d5db; padding-bottom: 6px; margin-bottom: 16px;"></div>
+
+          <h3 style="font-size: 15px; font-weight: bold; margin-bottom: 8px; color: #131b2e;">1. Topic Overview & Key Points</h3>
+          <div style="background-color: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px 16px; margin-bottom: 16px;">
+            <p style="font-size: 12px; margin: 0 0 6px 0;"><strong>미션:</strong> ${scriptData.mission || '영어 롤플레이 연습'}</p>
+            <p style="font-size: 12px; margin: 0 0 4px 0;"><strong>핵심 표현:</strong></p>
+            <ul style="margin: 0 0 8px 18px; padding: 0; font-size: 12px;">
+              ${(scriptData.corePatterns || []).map(p => `<li style="margin-bottom: 3px;"><code>${p.pattern}</code> - ${p.meaning}</li>`).join('')}
+            </ul>
+            ${scriptData.pronunciationTip ? `
+            <p style="font-size: 12px; margin: 0 0 4px 0;"><strong>발음 팁:</strong> <code>${scriptData.pronunciationTip.word}</code> ${scriptData.pronunciationTip.phonetic} - ${scriptData.pronunciationTip.tip}</p>
+            ` : ''}
+            ${scriptData.catTip ? `
+            <p style="font-size: 12px; margin: 0;"><strong>토키캣 뉘앙스 팁:</strong> ${scriptData.catTip}</p>
+            ` : ''}
+          </div>
+          <div style="border-bottom: 1px solid #e5e7eb; padding-bottom: 2px; margin-bottom: 16px;"></div>
+
+          <h3 style="font-size: 15px; font-weight: bold; margin-bottom: 8px; color: #131b2e;">2. English Script</h3>
+          <div style="background-color: #ffffff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px 16px; margin-bottom: 16px; font-size: 12px; line-height: 1.6;">
+            ${(scriptData.dialogue || []).map((line, idx) => {
+              const speakerLabel = idx % 2 === 0 ? 'A:' : 'B:';
+              return `<div style="margin-bottom: 6px;"><strong style="color: #004ac6; margin-right: 6px;">${speakerLabel}</strong> ${line.english}</div>`;
+            }).join('')}
+          </div>
+          <div style="border-bottom: 1px solid #e5e7eb; padding-bottom: 2px; margin-bottom: 16px;"></div>
+
+          <h3 style="font-size: 15px; font-weight: bold; margin-bottom: 8px; color: #131b2e;">3. Korean Translation</h3>
+          <div style="background-color: #ffffff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px 16px; margin-bottom: 16px; font-size: 12px; line-height: 1.6;">
+            ${(scriptData.dialogue || []).map((line, idx) => {
+              const speakerLabel = idx % 2 === 0 ? 'A:' : 'B:';
+              return `<div style="margin-bottom: 6px;"><strong style="color: #004ac6; margin-right: 6px;">${speakerLabel}</strong> ${line.korean}</div>`;
+            }).join('')}
+          </div>
+        </div>
+      `;
+
+      const html2pdf = (await import("html2pdf.js")).default;
+      const opt = {
+        margin: [15, 15, 15, 15] as [number, number, number, number],
+        filename: `${(scriptData.title || 'Roleplay_Script').replace(/[\s/\\?%*:|"<>]/g, '_')}.pdf`,
+        image: { type: 'jpeg' as const, quality: 0.98 },
+        html2canvas: { scale: 2, useCORS: true },
+        jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' as const }
+      };
+
+      await html2pdf().from(element).set(opt).save();
+      setDownloadingId(null);
+      setPdfPromptScript(item);
+    } catch (e) {
+      console.error("Failed to generate PDF", e);
+      setDownloadingId(null);
+      alert("PDF 생성 중 오류가 발생했습니다.");
+    }
+  };
+
+  const handleImportSubmit = async () => {
+    if (!importText.trim() || isImporting) return;
+    setIsImporting(true);
+
+    try {
+      const res = await fetch("/api/import-script", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rawText: importText })
+      });
+      const data = await res.json();
+
+      if (data.success && data.script) {
+        const newScript: GeneratedScript = data.script;
+        let existing: GeneratedScript[] = [];
+        try {
+          const saved = localStorage.getItem("talkycat_scripts");
+          if (saved) {
+            const parsed = JSON.parse(saved);
+            if (Array.isArray(parsed)) existing = parsed;
+          }
+        } catch (err) {
+          console.error("Error reading existing scripts", err);
+        }
+
+        const updated = [newScript, ...existing];
+        localStorage.setItem("talkycat_scripts", JSON.stringify(updated));
+        localStorage.setItem(`talkycat_script_${newScript.id}`, JSON.stringify(newScript));
+
+        setScripts(updated);
+        setIsImportModalOpen(false);
+        setImportText("");
+        setImportToastVisible(true);
+        setTimeout(() => setImportToastVisible(false), 2500);
+      } else {
+        throw new Error(data.error || "Failed to import script");
+      }
+    } catch (err) {
+      console.error("Import script error:", err);
+      alert("대본 변환 중 오류가 발생했습니다. 다시 시도해 주세요.");
+    } finally {
+      setIsImporting(false);
+    }
   };
 
   const checkScripts = useCallback(() => {
@@ -506,7 +679,7 @@ export default function Home() {
                         onTouchEnd={cancelLongPress}
                         onTouchMove={cancelLongPress}
                         onClick={() => handleScriptClick(item)}
-                        title="길게 누르거나 우측 삭제 버튼으로 삭제 가능"
+                        title="길게 누르거나 우측 버튼으로 다운로드/삭제 가능"
                       >
                         <div className="flex flex-col gap-1 min-w-0 flex-1">
                           <div className="flex items-center gap-2">
@@ -527,6 +700,27 @@ export default function Home() {
                           </h4>
                         </div>
                         <div className="flex items-center gap-1.5 flex-shrink-0">
+                          {/* PDF Download Button right before Delete Button */}
+                          <button
+                            className="w-8 h-8 rounded-full bg-[#dbe1ff] text-[#004ac6] flex items-center justify-center hover:bg-[#004ac6] hover:text-white transition-colors shadow-sm cursor-pointer"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDownloadPDF(item);
+                            }}
+                            type="button"
+                            title="PDF로 다운로드"
+                            disabled={downloadingId === item.id}
+                          >
+                            {downloadingId === item.id ? (
+                              <span className="material-symbols-outlined text-[16px] animate-spin">
+                                progress_activity
+                              </span>
+                            ) : (
+                              <span className="material-symbols-outlined text-[17px]">
+                                description
+                              </span>
+                            )}
+                          </button>
                           <button
                             className="w-8 h-8 rounded-full bg-[#ffdad6]/70 text-[#93000a] flex items-center justify-center hover:bg-[#ba1a1a] hover:text-white transition-colors shadow-sm cursor-pointer"
                             onClick={(e) => {
@@ -564,31 +758,83 @@ export default function Home() {
           </div>
         </main>
 
-        {/* Bottom Fixed Action Deck */}
-        <div className="fixed bottom-0 left-0 right-0 z-40 bg-[#faf8ff]/95 backdrop-blur-md border-t border-[#e2e7ff]/60 p-4 pb-safe flex items-center justify-center">
-          <div className="w-full max-w-[480px] flex items-center gap-3">
+        {/* Bottom Fixed Action Deck (3-Button Grid) */}
+        <div className="fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-md border-t border-gray-100 shadow-[0_-4px_20px_rgba(0,0,0,0.06)] flex items-center justify-center">
+          <div className="w-full max-w-[480px] grid grid-cols-3 gap-2 px-3 pt-2.5 pb-[max(1rem,env(safe-area-inset-bottom))]">
             <button
-              className="flex-1 h-14 bg-[#ffddb8] text-[#2a1700] font-label-md text-xs sm:text-sm font-bold rounded-2xl flex items-center justify-center gap-1.5 shadow-sm active:scale-95 transition-all cursor-pointer px-2"
+              className="h-13 bg-[#ffddb8] text-[#2a1700] font-label-sm text-[11px] font-bold rounded-2xl flex flex-col items-center justify-center gap-0.5 shadow-xs active:scale-95 transition-all cursor-pointer px-1"
               onClick={handleFreeTalk}
               type="button"
             >
-              <span className="material-symbols-outlined text-[20px] text-[#855300]">
+              <span className="material-symbols-outlined text-[18px] text-[#855300]">
                 call
               </span>
-              <span>프리토킹</span>
+              <span>💬 프리토킹</span>
             </button>
             <button
-              className="flex-1 h-14 bg-[#2563eb] text-white font-label-md text-xs sm:text-sm font-bold rounded-2xl shadow-lg shadow-[#2563eb]/25 flex items-center justify-center gap-1.5 active:scale-95 transition-all cursor-pointer hover:bg-[#1d4ed8] px-2 text-center leading-tight"
+              className="h-13 bg-[#dbe1ff] text-[#00174b] font-label-sm text-[11px] font-bold rounded-2xl flex flex-col items-center justify-center gap-0.5 shadow-xs active:scale-95 transition-all cursor-pointer px-1"
               onClick={handleOpenConfigModal}
               type="button"
             >
-              <span className="material-symbols-outlined text-[18px]">
+              <span className="material-symbols-outlined text-[18px] text-[#004ac6]">
                 auto_awesome
               </span>
-              <span>새 스크립트<br className="block sm:hidden" /> 만들기</span>
+              <span>✍️ 대본 생성</span>
+            </button>
+            <button
+              className="h-13 bg-[#2563eb] text-white font-label-sm text-[11px] font-bold rounded-2xl shadow-md shadow-[#2563eb]/25 flex flex-col items-center justify-center gap-0.5 active:scale-95 transition-all cursor-pointer hover:bg-[#1d4ed8] px-1"
+              onClick={() => setIsImportModalOpen(true)}
+              type="button"
+            >
+              <span className="material-symbols-outlined text-[18px]">
+                content_paste
+              </span>
+              <span>📋 대본 가져오기</span>
             </button>
           </div>
         </div>
+
+        {/* PDF Downloaded Central Modal */}
+        {pdfPromptScript && (
+          <div
+            className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in"
+            onClick={() => setPdfPromptScript(null)}
+          >
+            <div
+              className="bg-white rounded-3xl p-6 max-w-sm w-full text-center shadow-xl border border-orange-100 flex flex-col items-center gap-4 animate-in zoom-in-95"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="w-16 h-16 rounded-full bg-amber-100 flex items-center justify-center text-3xl shadow-inner">
+                📄🐾
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <h3 className="font-headline-md text-base sm:text-lg font-bold text-[#131b2e]">
+                  PDF 저장 완료냥! 🐾
+                </h3>
+                <p className="font-body-sm text-xs text-gray-600 leading-relaxed whitespace-pre-line">
+                  스크립트가 기기에 안전하게 저장되었습니다.<br />목록에서 이 대본을 정리(삭제)할까요?
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2.5 w-full pt-2">
+                <button
+                  className="bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium py-3 rounded-2xl flex-1 text-xs sm:text-sm transition cursor-pointer"
+                  onClick={() => setPdfPromptScript(null)}
+                  type="button"
+                >
+                  유지하기
+                </button>
+                <button
+                  className="bg-red-50 hover:bg-red-100 text-red-600 font-semibold py-3 rounded-2xl flex-1 text-xs sm:text-sm transition cursor-pointer"
+                  onClick={confirmDeleteFromPDFPrompt}
+                  type="button"
+                >
+                  목록에서 삭제
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Completion Toast Notification */}
         <div
@@ -602,6 +848,20 @@ export default function Home() {
             check_circle
           </span>
           <span>스크립트 생성 완료! 보관함에 추가되었습니다 🚀</span>
+        </div>
+
+        {/* Import Success Toast Notification */}
+        <div
+          className={`fixed top-20 left-1/2 -translate-x-1/2 z-50 bg-[#283044]/90 backdrop-blur-md text-white px-4 py-2.5 rounded-full shadow-lg text-xs font-semibold flex items-center gap-2 transition-all duration-300 ${
+            importToastVisible
+              ? "opacity-100 translate-y-0"
+              : "opacity-0 -translate-y-2 pointer-events-none"
+          }`}
+        >
+          <span className="material-symbols-outlined text-[#4edea3] text-[18px]">
+            check_circle
+          </span>
+          <span>새 스크립트가 추가되었습니다냥! 🐾</span>
         </div>
 
         {/* Deletion Toast Notification */}
@@ -693,6 +953,97 @@ export default function Home() {
                   </button>
                 </div>
               </form>
+            </div>
+          </div>
+        )}
+
+        {/* Import Script Modal */}
+        {isImportModalOpen && (
+          <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 bg-black/50 backdrop-blur-sm animate-in fade-in">
+            <div className="w-full max-w-[480px] bg-white rounded-t-[2.5rem] sm:rounded-3xl shadow-2xl p-6 flex flex-col gap-4 animate-in slide-in-from-bottom duration-300 max-h-[90vh] overflow-y-auto">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="w-9 h-9 rounded-full bg-[#dbe1ff] flex items-center justify-center text-[#004ac6]">
+                    <span className="material-symbols-outlined text-[20px]">content_paste</span>
+                  </div>
+                  <div>
+                    <h3 className="font-headline-md text-base sm:text-lg font-bold text-[#131b2e]">
+                      외부 대본 가져오기 📋
+                    </h3>
+                    <p className="font-body-sm text-[11px] text-[#737686]">
+                      영어 텍스트를 연습 대본으로 변환합니다!
+                    </p>
+                  </div>
+                </div>
+                <button
+                  className="w-8 h-8 rounded-full bg-[#eaedff] text-[#434655] flex items-center justify-center hover:bg-[#e2e7ff] transition cursor-pointer"
+                  onClick={() => setIsImportModalOpen(false)}
+                  type="button"
+                >
+                  <span className="material-symbols-outlined text-[18px]">close</span>
+                </button>
+              </div>
+
+              <p className="font-body-sm text-xs text-[#434655] leading-relaxed">
+                유튜브 대사, 미드 대사, 회화책 문장을 붙여넣으세요. 토키캣이 쉬운 연습 대본으로 변환해드립니다냥! 🐾
+              </p>
+
+              {/* File Upload Input (.txt) */}
+              <div className="flex items-center justify-between bg-[#faf8ff] border border-[#eaedff] rounded-2xl p-3">
+                <div className="flex items-center gap-2">
+                  <span className="material-symbols-outlined text-[#004ac6] text-[18px]">upload_file</span>
+                  <span className="text-xs text-[#434655] font-medium">.txt 파일 불러오기</span>
+                </div>
+                <input
+                  type="file"
+                  accept=".txt"
+                  className="text-xs text-slate-500 file:mr-4 file:py-1.5 file:px-3 file:rounded-xl file:border-0 file:text-xs file:font-semibold file:bg-[#dbe1ff] file:text-[#004ac6] hover:file:bg-[#c2ccff] cursor-pointer"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) {
+                      const reader = new FileReader();
+                      reader.onload = (event) => {
+                        const content = event.target?.result as string;
+                        if (content) setImportText(content);
+                      };
+                      reader.readAsText(file, "utf-8");
+                    }
+                  }}
+                />
+              </div>
+
+              {/* Textarea */}
+              <textarea
+                className="w-full h-36 bg-[#faf8ff] border border-[#eaedff] focus:border-[#004ac6] focus:ring-2 focus:ring-[#004ac6]/20 rounded-2xl p-3 text-xs sm:text-sm text-[#131b2e] placeholder:text-gray-400 font-normal outline-none transition resize-none"
+                placeholder="여기에 영어 대본이나 텍스트를 붙여넣으세요..."
+                value={importText}
+                onChange={(e) => setImportText(e.target.value)}
+              />
+
+              {/* Copyright Disclaimer (Zero-Storage Notice) */}
+              <p className="text-[10px] text-gray-400 leading-normal px-1">
+                &ldquo;가져온 텍스트는 서버에 저장되지 않으며 사용자의 개인 기기에서 개인 학습 목적으로만 활용됩니다.&rdquo;
+              </p>
+
+              {/* Action Button */}
+              <button
+                className="w-full h-13 bg-[#2563eb] text-white font-label-md text-sm font-bold rounded-2xl shadow-lg shadow-[#2563eb]/25 flex items-center justify-center gap-2 active:scale-95 transition-all cursor-pointer hover:bg-[#1d4ed8] disabled:opacity-50"
+                onClick={handleImportSubmit}
+                type="button"
+                disabled={isImporting || !importText.trim()}
+              >
+                {isImporting ? (
+                  <>
+                    <span className="material-symbols-outlined text-[18px] animate-spin">progress_activity</span>
+                    <span>대본 변환 중이다냥... 🐾</span>
+                  </>
+                ) : (
+                  <>
+                    <span className="material-symbols-outlined text-[18px]">auto_awesome</span>
+                    <span>변환하기 🐾</span>
+                  </>
+                )}
+              </button>
             </div>
           </div>
         )}
