@@ -40,6 +40,11 @@ export default function FreeTalkPage() {
   const isSpeakingRef = useRef<boolean>(false);
   const [isSpeakingState, setIsSpeakingState] = useState(false);
 
+  // Ironclad Guards against infinite loops and 429 quota exhaustion
+  const isProcessingRef = useRef<boolean>(false);
+  const lastCallTimeRef = useRef<number>(0);
+  const hasInitializedRef = useRef<boolean>(false);
+
   // Keep refs in sync
   useEffect(() => {
     messagesRef.current = messages;
@@ -118,7 +123,7 @@ export default function FreeTalkPage() {
     }
   };
 
-  const setWatchdog = (onTimeout: () => void, ms = 6000) => {
+  const setWatchdog = (onTimeout: () => void, ms = 8000) => {
     clearWatchdog();
     watchdogTimerRef.current = setTimeout(() => {
       onTimeout();
@@ -141,7 +146,7 @@ export default function FreeTalkPage() {
   }, []);
 
   const startListeningImmediate = useCallback(() => {
-    if (isSpeakingRef.current) return;
+    if (isSpeakingRef.current || isThinking) return;
     if (isRecognizingRef.current) return;
     if (recognitionRef.current) {
       try {
@@ -160,7 +165,7 @@ export default function FreeTalkPage() {
         setIsListening(false);
       }
     }
-  }, []);
+  }, [isThinking]);
 
   // Utility to purge emojis and markdown symbols before feeding into TTS
   const cleanTextForTTS = (text: string) => {
@@ -179,6 +184,11 @@ export default function FreeTalkPage() {
     }
 
     teardownSTT();
+    clearWatchdog();
+    if (silenceTimerRef.current) {
+      clearTimeout(silenceTimerRef.current);
+      silenceTimerRef.current = null;
+    }
     window.speechSynthesis.cancel();
     isSpeakingRef.current = true;
     setIsSpeakingState(true);
@@ -191,9 +201,10 @@ export default function FreeTalkPage() {
     const handleFinish = () => {
       isSpeakingRef.current = false;
       setIsSpeakingState(false);
+      // 450ms cooldown delay to prevent speaker echo re-triggering STT
       setTimeout(() => {
         if (onEnded) onEnded();
-      }, 300);
+      }, 450);
     };
 
     utterance.onend = handleFinish;
@@ -203,26 +214,41 @@ export default function FreeTalkPage() {
   }, [teardownSTT]);
 
   const sendUserMessageToAPI = useCallback(async (text: string, isResetCall: boolean = false) => {
-    const trimmed = text.trim();
-    // Noise filter: ignore if <= 2 characters or noise (unless it's a reset call)
-    if (!isResetCall && (!trimmed || trimmed.length <= 2)) {
-      setRecognizedText("");
-      latestTranscriptRef.current = "";
-      startListeningImmediate();
+    const trimmed = (text || "").trim();
+
+    // 1. Ironclad Guard: if not reset and text is empty/too short, block
+    if (!isResetCall && trimmed.length <= 1) {
+      console.log("[보안 가드] 발화 내용이 없어 전송을 차단합니다.");
       return;
     }
 
+    // 2. Ironclad Guard: debounce / duplicate call block (within 1.5s or currently processing)
+    const now = Date.now();
+    if (isProcessingRef.current || (now - lastCallTimeRef.current < 1500)) {
+      console.log("[보안 가드] 중복 또는 과도한 호출 차단.");
+      return;
+    }
+
+    isProcessingRef.current = true;
+    lastCallTimeRef.current = now;
+
     teardownSTT();
+    clearWatchdog();
+    if (silenceTimerRef.current) {
+      clearTimeout(silenceTimerRef.current);
+      silenceTimerRef.current = null;
+    }
+
     setIsThinking(true);
     setStatusText("토키캣이 생각 중이다냥... 🐾");
 
-    // Watchdog timer (6 seconds)
     setWatchdog(() => {
       console.warn("Watchdog triggered: freeing frozen state");
+      isProcessingRef.current = false;
       setIsThinking(false);
       setStatusText("토키캣이 잠시 쉬고 있다냥. 다시 말해보세요! 🐾");
       startListeningImmediate();
-    }, 6000);
+    }, 8000);
 
     const userMsg: ChatMessage = {
       id: Date.now().toString(),
@@ -256,15 +282,27 @@ export default function FreeTalkPage() {
           isReset: isResetCall
         })
       });
-      const data = await res.json();
 
+      if (res.status === 429) {
+        clearWatchdog();
+        isProcessingRef.current = false;
+        setIsThinking(false);
+        setStatusText("요청이 너무 많다냥! 잠시 뒤 시도해줘 🐾");
+        showToast("현재 대화 요청이 몰려 잠시 대기 중이다냥. 20초 뒤에 마이크를 눌러달라냥! 🐾");
+        startListeningImmediate();
+        return;
+      }
+
+      const data = await res.json();
       clearWatchdog();
-      setIsThinking(false);
+      isProcessingRef.current = false;
 
       if (data.success) {
-        const isDefaultTopic = !anchorTopicRef.current || anchorTopicRef.current === 'Casual Chat' || anchorTopicRef.current === 'Free Talk' || anchorTopicRef.current === 'General Chat';
-        if (data.extractedTopic && isDefaultTopic) {
-          setAnchorTopic(data.extractedTopic);
+        if (data.extractedTopic) {
+          const isDefault = !anchorTopicRef.current || anchorTopicRef.current === 'Casual Chat' || anchorTopicRef.current === 'Free Talk' || anchorTopicRef.current === 'General Chat';
+          if (isDefault) {
+            setAnchorTopic(data.extractedTopic);
+          }
         }
 
         const assistantMsg: ChatMessage = {
@@ -278,6 +316,7 @@ export default function FreeTalkPage() {
 
         const finalMessages = isResetCall ? [assistantMsg] : [...updatedMessages, assistantMsg];
         setMessages(finalMessages);
+        setIsThinking(false);
         setStatusText("토키캣이 말하고 있어요냥! 🐱");
 
         speakText(data.messageEn, 1.0, () => {
@@ -287,9 +326,10 @@ export default function FreeTalkPage() {
       } else {
         throw new Error("API failed");
       }
-    } catch (e) {
+    } catch (err) {
       clearWatchdog();
-      console.error("Free-talk API error:", e);
+      isProcessingRef.current = false;
+      console.error("Free-talk API error:", err);
       setIsThinking(false);
       setStatusText("통신 중 오류가 발생했다냥. 다시 시도해줘! 🐾");
       showToast("응답을 불러오지 못했습니다.");
@@ -308,7 +348,7 @@ export default function FreeTalkPage() {
       recognition.maxAlternatives = 1;
 
       recognition.onresult = (event: any) => {
-        if (isSpeakingRef.current) return;
+        if (isSpeakingRef.current || isThinking || isProcessingRef.current) return;
         let interim = "";
         let finalTranscript = "";
 
@@ -325,17 +365,16 @@ export default function FreeTalkPage() {
         latestTranscriptRef.current = currentTranscript;
         setRecognizedText(currentTranscript);
 
-        // 2.5 seconds silence debounce for free-talk
         if (silenceTimerRef.current) {
           clearTimeout(silenceTimerRef.current);
         }
         silenceTimerRef.current = setTimeout(() => {
-          if (isRecognizingRef.current && currentTranscript && !isSpeakingRef.current) {
+          if (isRecognizingRef.current && currentTranscript && !isSpeakingRef.current && !isThinking && !isProcessingRef.current) {
             sendUserMessageToAPI(currentTranscript);
           }
         }, 2500);
 
-        if (finalTranscript) {
+        if (finalTranscript && !isSpeakingRef.current && !isThinking && !isProcessingRef.current) {
           sendUserMessageToAPI(finalTranscript);
         }
       };
@@ -349,91 +388,26 @@ export default function FreeTalkPage() {
         setIsListening(false);
       };
 
+      // SANITIZED: Never call sendUserMessageToAPI from onend
       recognition.onend = () => {
         isRecognizingRef.current = false;
-        if (!isSpeakingRef.current && isListening) {
-          setTimeout(() => {
-            if (!isRecognizingRef.current && !isSpeakingRef.current && isListening) {
-              try {
-                recognition.start();
-                isRecognizingRef.current = true;
-              } catch {}
-            }
-          }, 300);
-        }
       };
 
       recognitionRef.current = recognition;
     }
-  }, [isListening, sendUserMessageToAPI]);
+  }, [isListening, isThinking, sendUserMessageToAPI]);
 
-  // Initial Entry: First API call on mount
+  // Initial Entry: First API call on mount (Strictly 1 time using hasInitializedRef)
   useEffect(() => {
+    if (hasInitializedRef.current) return;
+    hasInitializedRef.current = true;
+
     let isMounted = true;
     kickstartAudioHardware();
 
     const initConversation = async () => {
-      setIsThinking(true);
-      setStatusText("토키캣과 연결 중이다냥... 🐾");
-      setWatchdog(() => {
-        if (!isMounted) return;
-        setIsThinking(false);
-        setStatusText("토키캣과 연결 시간이 초과되었습니다. 다시 시도해줘! 🐾");
-      }, 6000);
-
-      try {
-        const res = await fetch("/api/free-talk", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ history: [], userMessage: "", anchorTopic: null })
-        });
-        const data = await res.json();
-        clearWatchdog();
-        if (!isMounted) return;
-        setIsThinking(false);
-
-        if (data.success) {
-          if (data.extractedTopic) {
-            setAnchorTopic(data.extractedTopic);
-          }
-
-          const initialMsg: ChatMessage = {
-            id: Date.now().toString(),
-            role: "assistant",
-            messageEn: data.messageEn,
-            messageKo: data.messageKo,
-            suggestedReplies: data.suggestedReplies || [],
-            silentCorrection: null
-          };
-          setMessages([initialMsg]);
-          setStatusText("토키캣이 말하고 있어요냥! 🐱");
-
-          speakText(data.messageEn, 1.0, () => {
-            if (isMounted) {
-              setStatusText("말씀하세요 🎙️ (탭하여 음소거)");
-              startListeningImmediate();
-            }
-          });
-        }
-      } catch (e) {
-        clearWatchdog();
-        console.error("Initialization error:", e);
-        if (isMounted) {
-          setIsThinking(false);
-          const fallbackMsg: ChatMessage = {
-            id: Date.now().toString(),
-            role: "assistant",
-            messageEn: "Hi there! What topic would you like to talk about today?",
-            messageKo: "안녕! 오늘 어떤 주제로 이야기해볼까?",
-            suggestedReplies: ["I want to talk about my weekend plans.", "Let's talk about hobbies!"],
-            silentCorrection: null
-          };
-          setMessages([fallbackMsg]);
-          speakText(fallbackMsg.messageEn, 1.0, () => {
-            if (isMounted) startListeningImmediate();
-          });
-        }
-      }
+      if (!isMounted) return;
+      sendUserMessageToAPI("", true);
     };
 
     initConversation();
@@ -442,15 +416,19 @@ export default function FreeTalkPage() {
       isMounted = false;
       clearWatchdog();
       teardownSTT();
+      if (silenceTimerRef.current) {
+        clearTimeout(silenceTimerRef.current);
+        silenceTimerRef.current = null;
+      }
       if (typeof window !== "undefined" && "speechSynthesis" in window) {
         window.speechSynthesis.cancel();
       }
     };
-  }, [speakText, teardownSTT, startListeningImmediate]);
+  }, [sendUserMessageToAPI, teardownSTT]);
 
   // 4-State Microphone Button Handler
   const handleMainMicClick = () => {
-    if (isThinking || isSpeakingState) return;
+    if (isThinking || isSpeakingState || isProcessingRef.current) return;
 
     if (isListening && recognizedText.trim().length > 0) {
       if (silenceTimerRef.current) {
@@ -473,6 +451,7 @@ export default function FreeTalkPage() {
   };
 
   const handleSuggestedClick = (reply: string) => {
+    if (isThinking || isSpeakingState || isProcessingRef.current) return;
     sendUserMessageToAPI(reply);
   };
 
@@ -493,20 +472,30 @@ export default function FreeTalkPage() {
   };
 
   const handleSimpleExplanation = () => {
+    if (isThinking || isSpeakingState || isProcessingRef.current) return;
     sendUserMessageToAPI("Could you explain this in much simpler English and simpler words, please?");
   };
 
   const handleResetConversation = () => {
+    if (isProcessingRef.current) return;
+
     teardownSTT();
+    clearWatchdog();
+    if (silenceTimerRef.current) {
+      clearTimeout(silenceTimerRef.current);
+      silenceTimerRef.current = null;
+    }
     if (typeof window !== "undefined" && "speechSynthesis" in window) {
       window.speechSynthesis.cancel();
     }
+    isSpeakingRef.current = false;
+    setIsSpeakingState(false);
+    setRecognizedText("");
+    latestTranscriptRef.current = "";
+
     showToast(`현재 주제('${anchorTopic || "새로운 대화"}')로 첫 질문부터 다시 시작한다냥! 🐾`);
     
-    // 1. UI 및 메모리 히스토리 즉시 초기화
     setMessages([]);
-
-    // 2. API 호출 시 상태 변수가 아닌 빈 배열 리터럴([])을 직접 전달
     sendUserMessageToAPI("", true);
   };
 
@@ -516,7 +505,7 @@ export default function FreeTalkPage() {
 
   // Determine mic button icon, label, style based on 4-state machine
   const getMicButtonState = () => {
-    if (isThinking || isSpeakingState) {
+    if (isThinking || isSpeakingState || isProcessingRef.current) {
       return {
         icon: "progress_activity",
         isSpinning: true,
@@ -574,6 +563,10 @@ export default function FreeTalkPage() {
                 onClick={() => {
                   clearWatchdog();
                   teardownSTT();
+                  if (silenceTimerRef.current) {
+                    clearTimeout(silenceTimerRef.current);
+                    silenceTimerRef.current = null;
+                  }
                   if (typeof window !== "undefined" && "speechSynthesis" in window) window.speechSynthesis.cancel();
                   router.replace("/");
                 }}
@@ -622,7 +615,7 @@ export default function FreeTalkPage() {
               <div className="flex flex-col min-w-0">
                 <span className="text-[10px] text-[#737686] font-bold">대화 주제</span>
                 <span className="text-[#004ac6] font-bold text-xs truncate max-w-[170px]">
-                  {anchorTopic || "자유롭게 이야기 중 🐾"}
+                  {anchorTopic ? anchorTopic : "주제 찾는 중... 🐾"}
                 </span>
               </div>
             </div>
@@ -796,6 +789,10 @@ export default function FreeTalkPage() {
                 onClick={() => {
                   clearWatchdog();
                   teardownSTT();
+                  if (silenceTimerRef.current) {
+                    clearTimeout(silenceTimerRef.current);
+                    silenceTimerRef.current = null;
+                  }
                   if (typeof window !== "undefined" && "speechSynthesis" in window) window.speechSynthesis.cancel();
                   router.replace("/");
                 }}
