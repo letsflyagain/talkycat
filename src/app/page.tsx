@@ -248,6 +248,18 @@ export default function Home() {
     }
   };
 
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const content = event.target?.result as string;
+        if (content) setImportText(content);
+      };
+      reader.readAsText(file, "utf-8");
+    }
+  };
+
   const handleImportSubmit = async () => {
     if (!importText.trim() || isImporting) return;
     setIsImporting(true);
@@ -988,37 +1000,41 @@ export default function Home() {
                 유튜브 대사, 미드 대사, 회화책 문장을 붙여넣으세요. 토키캣이 쉬운 연습 대본으로 변환해드립니다냥! 🐾
               </p>
 
-              {/* File Upload Input (.txt) */}
-              <div className="flex items-center justify-between bg-[#faf8ff] border border-[#eaedff] rounded-2xl p-3">
-                <div className="flex items-center gap-2">
-                  <span className="material-symbols-outlined text-[#004ac6] text-[18px]">upload_file</span>
-                  <span className="text-xs text-[#434655] font-medium">.txt 파일 불러오기</span>
+              {/* Text Area with Top Action Chip Header */}
+              <div className="flex flex-col w-full">
+                <div className="flex items-center justify-between mb-2 px-1">
+                  {/* 가독성을 높인 선명한 라벨 타이틀 */}
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-sm">✏️</span>
+                    <label htmlFor="script-textarea" className="text-sm font-bold text-gray-800">
+                      대본 텍스트 입력
+                    </label>
+                  </div>
+                  
+                  {/* 우측 심플 파일 불러오기 버튼 */}
+                  <label className="cursor-pointer inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-blue-50 hover:bg-blue-100 text-blue-600 text-xs font-semibold transition-all active:scale-95 whitespace-nowrap shadow-sm border border-blue-100">
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+                    </svg>
+                    <span>.txt 파일 불러오기</span>
+                    <input
+                      type="file"
+                      accept=".txt"
+                      className="hidden"
+                      onChange={handleFileUpload}
+                    />
+                  </label>
                 </div>
-                <input
-                  type="file"
-                  accept=".txt"
-                  className="text-xs text-slate-500 file:mr-4 file:py-1.5 file:px-3 file:rounded-xl file:border-0 file:text-xs file:font-semibold file:bg-[#dbe1ff] file:text-[#004ac6] hover:file:bg-[#c2ccff] cursor-pointer"
-                  onChange={(e) => {
-                    const file = e.target.files?.[0];
-                    if (file) {
-                      const reader = new FileReader();
-                      reader.onload = (event) => {
-                        const content = event.target?.result as string;
-                        if (content) setImportText(content);
-                      };
-                      reader.readAsText(file, "utf-8");
-                    }
-                  }}
+
+                {/* Textarea */}
+                <textarea
+                  id="script-textarea"
+                  className="w-full h-44 bg-[#faf8ff] border border-[#eaedff] focus:border-[#004ac6] focus:ring-2 focus:ring-[#004ac6]/20 rounded-2xl p-3 text-xs sm:text-sm text-[#131b2e] placeholder:text-gray-400 font-normal outline-none transition resize-none"
+                  placeholder="여기에 영어 대본이나 텍스트를 붙여넣으세요..."
+                  value={importText}
+                  onChange={(e) => setImportText(e.target.value)}
                 />
               </div>
-
-              {/* Textarea */}
-              <textarea
-                className="w-full h-36 bg-[#faf8ff] border border-[#eaedff] focus:border-[#004ac6] focus:ring-2 focus:ring-[#004ac6]/20 rounded-2xl p-3 text-xs sm:text-sm text-[#131b2e] placeholder:text-gray-400 font-normal outline-none transition resize-none"
-                placeholder="여기에 영어 대본이나 텍스트를 붙여넣으세요..."
-                value={importText}
-                onChange={(e) => setImportText(e.target.value)}
-              />
 
               {/* Copyright Disclaimer (Zero-Storage Notice) */}
               <p className="text-[10px] text-gray-400 leading-normal px-1">
