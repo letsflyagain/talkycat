@@ -3,6 +3,8 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import Image from "next/image";
+import { UserLevel } from "@/types/script";
+import NicknameModal from "@/components/NicknameModal";
 
 interface ChatMessage {
   id: string;
@@ -16,6 +18,10 @@ interface ChatMessage {
 export default function FreeTalkPage() {
   const router = useRouter();
   const [nickname, setNickname] = useState("사용자");
+  const [userLevel, setUserLevel] = useState<UserLevel>("A1");
+  const [streakGoal, setStreakGoal] = useState(7);
+  const [isNicknameModalOpen, setIsNicknameModalOpen] = useState(false);
+
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [anchorTopic, setAnchorTopic] = useState<string | null>(null);
   const [isListening, setIsListening] = useState(false);
@@ -37,6 +43,7 @@ export default function FreeTalkPage() {
   const wakeLockRef = useRef<any>(null);
   const messagesRef = useRef<ChatMessage[]>([]);
   const anchorTopicRef = useRef<string | null>(null);
+  const userLevelRef = useRef<UserLevel>("A1");
   const isSpeakingRef = useRef<boolean>(false);
   const [isSpeakingState, setIsSpeakingState] = useState(false);
 
@@ -54,15 +61,40 @@ export default function FreeTalkPage() {
     anchorTopicRef.current = anchorTopic;
   }, [anchorTopic]);
 
-  // Load nickname
+  useEffect(() => {
+    userLevelRef.current = userLevel;
+  }, [userLevel]);
+
+  // Load nickname and userLevel
   useEffect(() => {
     try {
       const saved = localStorage.getItem("talkycat_nickname");
       if (saved) setNickname(saved);
+      const savedLevel = localStorage.getItem("talkycat_user_level") as UserLevel;
+      if (savedLevel) {
+        setUserLevel(savedLevel);
+        userLevelRef.current = savedLevel;
+      }
+      const savedGoal = localStorage.getItem("talkycat_streak_goal");
+      if (savedGoal) setStreakGoal(Number(savedGoal));
     } catch (e) {
-      console.warn("Failed to load nickname", e);
+      console.warn("Failed to load profile", e);
     }
   }, []);
+
+  const handleSaveProfile = (newNickname: string, newGoal: number, newLevel: UserLevel) => {
+    setNickname(newNickname);
+    setStreakGoal(newGoal);
+    setUserLevel(newLevel);
+    userLevelRef.current = newLevel;
+    try {
+      localStorage.setItem("talkycat_nickname", newNickname);
+      localStorage.setItem("talkycat_streak_goal", newGoal.toString());
+      localStorage.setItem("talkycat_user_level", newLevel);
+    } catch (e) {
+      console.error("Failed to save profile", e);
+    }
+  };
 
   // Screen Wake Lock
   useEffect(() => {
@@ -167,7 +199,6 @@ export default function FreeTalkPage() {
     }
   }, [isThinking]);
 
-  // Utility to purge emojis and markdown symbols before feeding into TTS
   const cleanTextForTTS = (text: string) => {
     return text
       .replace(/[\u{1F300}-\u{1F9FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{1F1E0}-\u{1F1FF}\u{1F600}-\u{1F64F}\u{1F680}-\u{1F6FF}]/gu, '')
@@ -201,7 +232,6 @@ export default function FreeTalkPage() {
     const handleFinish = () => {
       isSpeakingRef.current = false;
       setIsSpeakingState(false);
-      // 스피커 잔향 및 에코가 완전히 소멸된 후 마이크 시작 (800ms)
       setTimeout(() => {
         if (onEnded) {
           onEnded();
@@ -219,21 +249,19 @@ export default function FreeTalkPage() {
 
   const isValidSpeech = (text: string) => {
     const cleaned = text.trim().toLowerCase();
-    if (cleaned.length < 4) return false; // 3글자 이하는 노이즈로 간주
-    if (['yeah', 'yes', 'no', 'ok', 'okay'].includes(cleaned)) return true; // 짧아도 유효한 대답은 허용
+    if (cleaned.length < 4) return false;
+    if (['yeah', 'yes', 'no', 'ok', 'okay'].includes(cleaned)) return true;
     return cleaned.split(/\s+/).length >= 1;
   };
 
-  const sendUserMessageToAPI = useCallback(async (text: string, isResetCall: boolean = false) => {
+  const sendUserMessageToAPI = useCallback(async (text: string) => {
     const trimmed = (text || "").trim();
 
-    // 1. Ironclad Guard: if not reset and text is empty/too short, block
-    if (!isResetCall && trimmed.length <= 1) {
+    if (trimmed.length <= 1) {
       console.log("[보안 가드] 발화 내용이 없어 전송을 차단합니다.");
       return;
     }
 
-    // 2. Ironclad Guard: debounce / duplicate call block (within 1.5s or currently processing)
     const now = Date.now();
     if (isProcessingRef.current || (now - lastCallTimeRef.current < 1500)) {
       console.log("[보안 가드] 중복 또는 과도한 호출 차단.");
@@ -268,17 +296,13 @@ export default function FreeTalkPage() {
       messageKo: "(사용자 발화)"
     };
 
-    const updatedMessages = isResetCall ? [] : [...messagesRef.current, userMsg];
-    if (!isResetCall) {
-      setMessages(updatedMessages);
-    } else {
-      setMessages([]);
-    }
+    const updatedMessages = [...messagesRef.current, userMsg];
+    setMessages(updatedMessages);
     setRecognizedText("");
     latestTranscriptRef.current = "";
 
     try {
-      const historyPayload = isResetCall ? [] : updatedMessages.map((m) => ({
+      const historyPayload = updatedMessages.map((m) => ({
         role: m.role,
         text: m.messageEn
       }));
@@ -288,9 +312,10 @@ export default function FreeTalkPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           history: historyPayload,
-          userMessage: isResetCall ? "" : trimmed,
+          userMessage: trimmed,
           anchorTopic: anchorTopicRef.current,
-          isReset: isResetCall
+          isReset: false,
+          userLevel: userLevelRef.current
         })
       });
 
@@ -309,11 +334,8 @@ export default function FreeTalkPage() {
       isProcessingRef.current = false;
 
       if (data.success) {
-        if (data.extractedTopic) {
-          const isDefault = !anchorTopicRef.current || anchorTopicRef.current === 'Casual Chat' || anchorTopicRef.current === 'Free Talk' || anchorTopicRef.current === 'General Chat';
-          if (isDefault) {
-            setAnchorTopic(data.extractedTopic);
-          }
+        if (data.extractedTopic && (!anchorTopicRef.current || anchorTopicRef.current === 'Casual Chat' || anchorTopicRef.current === 'Free Talk' || anchorTopicRef.current === 'General Chat')) {
+          setAnchorTopic(data.extractedTopic);
         }
 
         const assistantMsg: ChatMessage = {
@@ -325,7 +347,7 @@ export default function FreeTalkPage() {
           silentCorrection: data.silentCorrection || null
         };
 
-        const finalMessages = isResetCall ? [assistantMsg] : [...updatedMessages, assistantMsg];
+        const finalMessages = [...updatedMessages, assistantMsg];
         setMessages(finalMessages);
         setIsThinking(false);
         setStatusText("토키캣이 말하고 있어요냥! 🐱");
@@ -415,7 +437,7 @@ export default function FreeTalkPage() {
     }
   }, [isListening, isThinking, sendUserMessageToAPI]);
 
-  // Initial Entry: First API call on mount (Strictly 1 time using hasInitializedRef)
+  // Initial Entry: Set fixed opening message and speak it (Strictly 1 time)
   useEffect(() => {
     if (hasInitializedRef.current) return;
     hasInitializedRef.current = true;
@@ -425,7 +447,24 @@ export default function FreeTalkPage() {
 
     const initConversation = async () => {
       if (!isMounted) return;
-      sendUserMessageToAPI("", true);
+      const openingMsg: ChatMessage = {
+        id: Date.now().toString(),
+        role: "assistant",
+        messageEn: "What kind of topic would you like to talk about?",
+        messageKo: "어떤 주제로 대화해보고 싶냥? 🐾",
+        suggestedReplies: [
+          "I want to talk about my weekend plans.",
+          "Let's talk about my favorite food!"
+        ],
+        silentCorrection: null
+      };
+      setMessages([openingMsg]);
+      setAnchorTopic(null);
+      setStatusText("토키캣이 말하고 있어요냥! 🐱");
+      speakText("What kind of topic would you like to talk about?", 1.0, () => {
+        setStatusText("말씀하세요 🎙️ (탭하여 음소거)");
+        startListeningImmediate();
+      });
     };
 
     initConversation();
@@ -442,9 +481,8 @@ export default function FreeTalkPage() {
         window.speechSynthesis.cancel();
       }
     };
-  }, [sendUserMessageToAPI, teardownSTT]);
+  }, [speakText, teardownSTT, startListeningImmediate]);
 
-  // 4-State Microphone Button Handler
   const handleMainMicClick = () => {
     if (isThinking || isSpeakingState || isProcessingRef.current) return;
 
@@ -478,7 +516,6 @@ export default function FreeTalkPage() {
     setIsCorrectionModalOpen(true);
   };
 
-  // Action handlers for auxiliary buttons
   const handleSlowReplay = () => {
     const latest = [...messages].reverse().find(m => m.role === "assistant");
     if (latest) {
@@ -510,18 +547,32 @@ export default function FreeTalkPage() {
     setIsSpeakingState(false);
     setRecognizedText("");
     latestTranscriptRef.current = "";
+    setAnchorTopic(null);
 
-    showToast(`현재 주제('${anchorTopic || "새로운 대화"}')로 첫 질문부터 다시 시작한다냥! 🐾`);
-    
-    setMessages([]);
-    sendUserMessageToAPI("", true);
+    showToast("대화를 처음부터 다시 시작한다냥! 🐾");
+
+    const openingMsg: ChatMessage = {
+      id: Date.now().toString(),
+      role: "assistant",
+      messageEn: "What kind of topic would you like to talk about?",
+      messageKo: "어떤 주제로 대화해보고 싶냥? 🐾",
+      suggestedReplies: [
+        "I want to talk about my weekend plans.",
+        "Let's talk about my favorite food!"
+      ],
+      silentCorrection: null
+    };
+    setMessages([openingMsg]);
+    setStatusText("토키캣이 말하고 있어요냥! 🐱");
+    speakText("What kind of topic would you like to talk about?", 1.0, () => {
+      setStatusText("말씀하세요 🎙️ (탭하여 음소거)");
+      startListeningImmediate();
+    });
   };
 
-  // Get current active assistant message
   const latestAssistantMsg = [...messages].reverse().find(m => m.role === "assistant");
   const currentSuggestedReplies = latestAssistantMsg?.suggestedReplies || [];
 
-  // Determine mic button icon, label, style based on 4-state machine
   const getMicButtonState = () => {
     if (isThinking || isSpeakingState || isProcessingRef.current) {
       return {
@@ -611,9 +662,18 @@ export default function FreeTalkPage() {
                 <span className="material-symbols-outlined text-[15px]">history</span>
                 <span>기록</span>
               </button>
-              <div className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-[#e2e7ff] text-[#131b2e] font-label-sm text-xs shadow-sm">
-                <span>{nickname}님</span>
-              </div>
+              <button
+                className="flex items-center gap-1.5 p-1 rounded-full bg-orange-50/60 border border-orange-100 shadow-xs hover:bg-orange-100/60 transition cursor-pointer"
+                onClick={() => setIsNicknameModalOpen(true)}
+                type="button"
+                title="프로필 및 레벨 수정"
+              >
+                <span>🐾</span>
+                <span className="text-xs sm:text-sm font-bold text-gray-800 max-w-[70px] sm:max-w-[90px] truncate">{nickname}님</span>
+                <span className="text-[10px] sm:text-[11px] font-bold px-2 py-0.5 rounded-full bg-white text-orange-600 border border-orange-200/80 shadow-2xs whitespace-nowrap">
+                  {(userLevel || "A1").replace("-", "~")}
+                </span>
+              </button>
             </div>
           </div>
         </header>
@@ -631,9 +691,9 @@ export default function FreeTalkPage() {
             <div className="flex items-center gap-1.5 min-w-0 pr-2">
               <span className="text-xs">📌</span>
               <div className="flex flex-col min-w-0">
-                <span className="text-[10px] text-[#737686] font-bold">대화 주제</span>
+                <span className="text-[10px] text-[#737686] font-bold">대화 주제 (Anchor Topic)</span>
                 <span className="text-[#004ac6] font-bold text-xs truncate max-w-[170px]">
-                  {anchorTopic ? anchorTopic : "주제 찾는 중... 🐾"}
+                  {anchorTopic ? `Topic: ${anchorTopic}` : "주제 탐색 중... 🐾"}
                 </span>
               </div>
             </div>
@@ -642,7 +702,7 @@ export default function FreeTalkPage() {
               onClick={handleResetConversation}
               type="button"
             >
-              <span>🔄 처음부터 다시</span>
+              <span>🔄 대화 리셋</span>
             </button>
           </div>
 
@@ -723,7 +783,7 @@ export default function FreeTalkPage() {
 
         {/* 3. Unified Bottom Footer with Safe Area Inset and 2-Tier Deck */}
         <footer className="absolute bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-md border-t border-[#eaedff] shadow-[0_-4px_20px_rgba(0,0,0,0.06)] px-3 pt-2 pb-[max(1rem,env(safe-area-inset-bottom))] flex flex-col gap-2 max-w-[480px] mx-auto flex-shrink-0">
-          {/* Suggested Replies Chips (When available and not thinking) */}
+          {/* Suggested Replies Chips */}
           {currentSuggestedReplies.length > 0 && !isThinking && !isSpeakingState && (
             <div className="flex flex-wrap justify-center gap-1 w-full">
               {currentSuggestedReplies.map((reply, idx) => (
@@ -739,7 +799,7 @@ export default function FreeTalkPage() {
             </div>
           )}
 
-          {/* Auxiliary Quick Buttons Row (3 columns: 천천히, 쉽게 설명, 대화 리셋) */}
+          {/* Auxiliary Quick Buttons Row */}
           <div className="w-full max-w-[480px] mx-auto grid grid-cols-3 gap-1.5">
             <button
               className="h-9 px-2 rounded-xl bg-white border border-[#c3c6d7]/60 shadow-xs flex items-center justify-center gap-1 text-[#131b2e] hover:bg-[#f2f3ff] active:scale-95 transition-all cursor-pointer"
@@ -767,7 +827,7 @@ export default function FreeTalkPage() {
             </button>
           </div>
 
-          {/* Main Control Deck (Left: Replay, Center: Revamped 4-State Mic Button, Right: End Call) */}
+          {/* Main Control Deck */}
           <div className="w-full max-w-[480px] mx-auto flex items-center justify-around px-4 py-2 rounded-2xl bg-[#f2f3ff]/80 border border-[#eaedff] shadow-xs">
             <div className="flex flex-col items-center">
               <button
@@ -783,7 +843,7 @@ export default function FreeTalkPage() {
               <span className="font-label-sm text-[10px] text-[#434655] mt-0.5 font-bold">다시듣기</span>
             </div>
 
-            {/* Revamped Center Microphone Button with State Machine */}
+            {/* Center Microphone Button */}
             <div className="flex flex-col items-center">
               <button
                 className={`w-14 h-14 rounded-full text-white flex items-center justify-center active:scale-95 transition-transform cursor-pointer ${micState.bgStyle}`}
@@ -892,6 +952,15 @@ export default function FreeTalkPage() {
           </div>
         </div>
       )}
+
+      <NicknameModal
+        isOpen={isNicknameModalOpen}
+        initialNickname={nickname === "사용자" ? "" : nickname}
+        initialGoal={streakGoal}
+        initialLevel={userLevel}
+        onClose={() => setIsNicknameModalOpen(false)}
+        onSave={handleSaveProfile}
+      />
     </div>
   );
 }

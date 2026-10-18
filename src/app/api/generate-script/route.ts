@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
-import { GeneratedScript } from "@/types/script";
+import { GeneratedScript, UserLevel } from "@/types/script";
+import { getLevelInstruction } from "@/lib/levelPrompt";
 
 // Mock fallback scripts in case API key is missing or call fails
 const MOCK_SCRIPTS: Omit<GeneratedScript, "id" | "date" | "completedCount">[] = [
@@ -111,6 +112,7 @@ const MOCK_SCRIPTS: Omit<GeneratedScript, "id" | "date" | "completedCount">[] = 
 export async function POST(request: Request) {
   let excludeTopics: string[] = [];
   let customTopic = "";
+  let userLevel: UserLevel = "A1";
 
   try {
     const body = await request.json().catch(() => ({}));
@@ -120,6 +122,9 @@ export async function POST(request: Request) {
       }
       if (typeof body.customTopic === "string") {
         customTopic = body.customTopic.trim();
+      }
+      if (typeof body.userLevel === "string") {
+        userLevel = body.userLevel as UserLevel;
       }
     }
   } catch {
@@ -166,6 +171,7 @@ export async function POST(request: Request) {
       title: finalTitle,
       mission: finalMission,
       category: inferredCategory,
+      level: userLevel,
       id: Date.now().toString(),
       date: new Date().toISOString().slice(0, 10).replace(/-/g, "."),
       completedCount: 0,
@@ -216,8 +222,10 @@ Do NOT generate unrelated generic conversations like cafe ordering or simple mor
 Since no custom topic was provided, generate a popular, engaging everyday English conversation script and intelligently choose the matching category.
 `;
 
+    const levelInstruction = getLevelInstruction(userLevel);
+
     const systemInstruction = `
-You are 'TalkyCat', an authentic, warm, and highly practical conversational English tutor for adult learners at CEFR A2 level (practical daily conversation).
+You are 'TalkyCat', an authentic, warm, and highly practical conversational English tutor for adult learners at CEFR ${userLevel} level.
 Your goal is to generate a realistic, non-cliché daily English conversation script in JSON format.
 
 Available categories:
@@ -229,16 +237,17 @@ Available categories:
 ${customTopicClause}
 ${exclusionClause}
 
-Difficulty & Style Rules (CEFR A2 Level Strict Standards):
+Difficulty & Style Rules (CEFR ${userLevel} Level Strict Standards):
+- Target Level Difficulty & Style Instruction: ${levelInstruction}
 - Turn Count: The dialogue array MUST contain strictly 8 to 10 alternating lines between 'cat' and 'user' (the learner). Do not generate fewer than 8 lines or more than 10 lines.
-- Sentence Length & Structure: Each English sentence should be roughly 6 to 10 words long, offering a natural rhythm for speaking aloud. Avoid overly academic prose or overly brief one-word sentences like "Yes." or "Thanks." without context. Use complete, natural conversational sentences.
+- Sentence Length & Structure: Each English sentence should be appropriate for ${userLevel} level, offering a natural rhythm for speaking aloud. Avoid overly academic prose. Use complete, natural conversational sentences.
 - corePatterns: Exactly 3 essential practical patterns (pattern & Korean meaning).
 - pronunciationTip: Focus on 1 real-world pronunciation hurdle.
 - catTip: Must end with a warm cat-like persona tone ("~해보라냥! 🐾").
 - Output format: STRICTLY JSON ONLY matching the schema. No markdown fences, no prefixes, no trailing explanations.
 `;
 
-    const prompt = `Generate an engaging A2 level English conversation script following the guidelines.
+    const prompt = `Generate an engaging ${userLevel} level English conversation script following the guidelines.
 ${customTopic ? `Target User Custom Topic / Situation: "${customTopic}" (MUST BE 100% PRIORITIZED)` : "Generate a fresh, engaging daily conversation."}
 
 Return JSON with this exact structure:
@@ -262,7 +271,7 @@ Return JSON with this exact structure:
       "id": 1,
       "speaker": "cat" | "user",
       "speakerName": "string",
-      "english": "string (6~10 words long, natural A2 spoken English)",
+      "english": "string (appropriate length and structure for ${userLevel} spoken English)",
       "korean": "string"
     }
   ]
@@ -270,7 +279,7 @@ Return JSON with this exact structure:
 `;
 
     const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash-lite", // CRITICAL requirement
+      model: "gemini-3.5-flash-lite",
       contents: prompt,
       config: {
         systemInstruction: systemInstruction,
@@ -301,6 +310,7 @@ Return JSON with this exact structure:
     const script: GeneratedScript = {
       id: Date.now().toString(),
       date: new Date().toISOString().slice(0, 10).replace(/-/g, "."),
+      level: userLevel,
       category: inferredCategory,
       title: parsedData.title || (customTopic ? `맞춤 주제: ${customTopic}` : "새로운 일상 대화"),
       mission: parsedData.mission || (customTopic ? `${customTopic} 상황에서 영어 대화 나누기` : "상대방과 자연스럽게 대화 나누기"),

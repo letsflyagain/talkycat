@@ -1,3 +1,5 @@
+export type UserLevel = 'A1' | 'A1-A2' | 'A2' | 'A2-B1' | 'B1' | 'B2';
+
 export interface DialogueLine {
   id: number;
   speaker: 'cat' | 'user';       // 'cat' = 토키캣 (점원/동료/상대방), 'user' = 나 (손님/학습자)
@@ -20,6 +22,9 @@ export interface PronunciationTip {
 export interface GeneratedScript {
   id: string;                     // Date.now().toString()
   date: string;                   // "YYYY.MM.DD"
+  createdAt?: string;             // 생성 일자
+  level?: UserLevel | string;     // CEFR 레벨 (예: A1, A1-A2, A2 등)
+  completed?: boolean;            // 완료 여부
   category: "생활영어" | "비즈니스" | "여행/식당" | "영화/드라마 명장면";
   title: string;                  // 예: "편의점에서 물건 위치 묻기"
   mission: string;                // 예: "편의점 직원에게 생수 위치를 묻고 카드 결제까지 완료하기"

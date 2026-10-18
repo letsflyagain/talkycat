@@ -6,11 +6,13 @@ import { useRouter } from "next/navigation";
 import Image from "next/image";
 import NicknameModal from "@/components/NicknameModal";
 import GenerateProgressModal from "@/components/GenerateProgressModal";
-import { GeneratedScript } from "@/types/script";
+import { GeneratedScript, UserLevel } from "@/types/script";
 
 interface ScriptListItem {
   id: string;
   date: string;
+  createdAt?: string;
+  level?: UserLevel | string;
   completedCount: number;
   category: "생활영어" | "비즈니스" | "여행/식당" | "영화/드라마 명장면";
   title: string;
@@ -24,6 +26,7 @@ export default function Home() {
   const [streakCount, setStreakCount] = useState(1);
   const [streakGoal, setStreakGoal] = useState(7);
   const [todaySentences, setTodaySentences] = useState(0);
+  const [userLevel, setUserLevel] = useState<UserLevel>("A1");
 
   const [scripts, setScripts] = useState<ScriptListItem[]>([]);
 
@@ -289,7 +292,7 @@ export default function Home() {
       const res = await fetch("/api/import-script", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ rawText: importText })
+        body: JSON.stringify({ rawText: importText, userLevel })
       });
       const data = await res.json();
 
@@ -351,10 +354,12 @@ export default function Home() {
       const savedStreakCount = localStorage.getItem("talkycat_streak_count");
       const savedStreakGoal = localStorage.getItem("talkycat_streak_goal");
       const savedTodaySentences = localStorage.getItem("talkycat_today_sentences");
+      const savedUserLevel = localStorage.getItem("talkycat_user_level") as UserLevel;
 
       if (savedStreakCount) setStreakCount(Number(savedStreakCount));
       if (savedStreakGoal) setStreakGoal(Number(savedStreakGoal));
       if (savedTodaySentences) setTodaySentences(Number(savedTodaySentences));
+      if (savedUserLevel) setUserLevel(savedUserLevel);
 
       if (!savedNickname) {
         setIsNicknameModalOpen(true);
@@ -368,12 +373,14 @@ export default function Home() {
     }
   }, [checkScripts]);
 
-  const handleSaveProfile = (newNickname: string, newGoal: number) => {
+  const handleSaveProfile = (newNickname: string, newGoal: number, newLevel: UserLevel) => {
     setNickname(newNickname);
     setStreakGoal(newGoal);
+    setUserLevel(newLevel);
     try {
       localStorage.setItem("talkycat_nickname", newNickname);
       localStorage.setItem("talkycat_streak_goal", newGoal.toString());
+      localStorage.setItem("talkycat_user_level", newLevel);
       if (!localStorage.getItem("talkycat_streak_count")) {
         localStorage.setItem("talkycat_streak_count", "1");
         setStreakCount(1);
@@ -404,6 +411,7 @@ export default function Home() {
         body: JSON.stringify({
           customTopic: customTopicInput,
           excludeTopics,
+          userLevel,
         }),
       });
       const data = await res.json();
@@ -558,13 +566,15 @@ export default function Home() {
                 </span>
               </div>
               <button
-                className="flex items-center gap-1 bg-[#eaedff] hover:bg-[#e2e7ff] px-3 py-1 rounded-full text-[#131b2e] font-label-sm text-[11px] transition-colors active:scale-95 cursor-pointer"
+                className="flex items-center gap-1.5 p-1 rounded-full bg-orange-50/60 border border-orange-100 shadow-xs hover:bg-orange-100/60 transition cursor-pointer"
                 onClick={() => setIsNicknameModalOpen(true)}
                 type="button"
+                title="프로필 및 레벨 수정"
               >
-                <span className="font-semibold">{nickname}님</span>
-                <span className="material-symbols-outlined text-[14px] text-[#737686]">
-                  edit
+                <span>🐾</span>
+                <span className="text-xs sm:text-sm font-bold text-gray-800 max-w-[70px] sm:max-w-[90px] truncate">{nickname}님</span>
+                <span className="text-[10px] sm:text-[11px] font-bold px-2 py-0.5 rounded-full bg-white text-orange-600 border border-orange-200/80 shadow-2xs whitespace-nowrap">
+                  {(userLevel || "A1").replace("-", "~")}
                 </span>
               </button>
             </div>
@@ -688,17 +698,9 @@ export default function Home() {
                   </div>
                 ) : (
                   filteredScripts.map((item) => {
-                    let badgeBg = "bg-[#dbe1ff] text-[#00174b]";
                     let badgeText = "미완료";
                     if (item.completedCount > 0) {
                       badgeText = `🐾 ${item.completedCount}회 완료`;
-                      if (item.completedCount >= 3) {
-                        badgeBg = "bg-[#ffddb8] text-[#2a1700]";
-                      } else if (item.completedCount === 2) {
-                        badgeBg = "bg-[#6ffbbe] text-[#002113]";
-                      } else {
-                        badgeBg = "bg-[#e2e7ff] text-[#434655]";
-                      }
                     }
 
                     return (
@@ -715,18 +717,35 @@ export default function Home() {
                         title="길게 누르거나 우측 버튼으로 다운로드/삭제 가능"
                       >
                         <div className="flex flex-col gap-1 min-w-0 flex-1">
-                          <div className="flex items-center gap-2">
-                            <span className="font-label-sm text-[11px] text-[#737686]">
-                              {item.date}
+                          <div className="flex items-center flex-wrap gap-1.5 text-xs text-gray-500 mb-0.5">
+                            <span className="text-gray-400 font-medium whitespace-nowrap">
+                              {item.createdAt || item.date}
                             </span>
+
+                            <span className="text-gray-300">·</span>
+
+                            <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-bold bg-amber-50 text-amber-700 border border-amber-200/60 whitespace-nowrap">
+                              {(item.level || 'A1').replace("-", "~")}
+                            </span>
+
+                            <span className="text-gray-300">·</span>
+
                             <span
-                              className={`font-label-sm text-[11px] px-2 py-0.5 rounded-full font-bold ${badgeBg}`}
+                              className={`inline-flex items-center font-medium whitespace-nowrap ${
+                                item.completedCount > 0 ? 'text-emerald-600 font-semibold' : 'text-gray-400'
+                              }`}
                             >
                               {badgeText}
                             </span>
-                            <span className="text-[10px] text-[#004ac6] bg-[#dbe1ff]/60 px-1.5 py-0.5 rounded font-medium">
-                              {item.category}
-                            </span>
+
+                            {item.category && (
+                              <>
+                                <span className="text-gray-300">·</span>
+                                <span className="text-gray-500 font-medium whitespace-nowrap">
+                                  {item.category}
+                                </span>
+                              </>
+                            )}
                           </div>
                           <h4 className="font-headline-sm text-[15px] text-[#131b2e] font-bold truncate">
                             {item.title}
@@ -1028,7 +1047,6 @@ export default function Home() {
               {/* Text Area with Top Action Chip Header */}
               <div className="flex flex-col w-full">
                 <div className="flex items-center justify-between mb-2 px-1">
-                  {/* 가독성을 높인 선명한 라벨 타이틀 */}
                   <div className="flex items-center gap-1.5">
                     <span className="text-sm">✏️</span>
                     <label htmlFor="script-textarea" className="text-sm font-bold text-gray-800">
@@ -1036,7 +1054,6 @@ export default function Home() {
                     </label>
                   </div>
                   
-                  {/* 우측 심플 파일 불러오기 버튼 */}
                   <label className="cursor-pointer inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-blue-50 hover:bg-blue-100 text-blue-600 text-xs font-semibold transition-all active:scale-95 whitespace-nowrap shadow-sm border border-blue-100">
                     <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
@@ -1133,6 +1150,7 @@ export default function Home() {
           isOpen={isNicknameModalOpen}
           initialNickname={nickname === "사용자" ? "" : nickname}
           initialGoal={streakGoal}
+          initialLevel={userLevel}
           onClose={() => setIsNicknameModalOpen(false)}
           onSave={handleSaveProfile}
         />

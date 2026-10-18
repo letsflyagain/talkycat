@@ -12,6 +12,10 @@ const plusJakartaSans = Plus_Jakarta_Sans({
 export const metadata: Metadata = {
   title: "TalkyCat - 매일 즐겁게 말하는 영어 회화 러닝메이트",
   description: "초보자를 위한 실전 AI 영어 회화 트레이너, 토키캣과 함께 매일 대화하세요냥!",
+  icons: {
+    icon: '/icon.png',
+    apple: '/icon.png',
+  },
 };
 
 export const viewport: Viewport = {

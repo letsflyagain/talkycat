@@ -4,7 +4,8 @@
 import React, { useState, useEffect, Suspense, useCallback } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Image from "next/image";
-import { GeneratedScript, DialogueLine } from "@/types/script";
+import { GeneratedScript, DialogueLine, UserLevel } from "@/types/script";
+import NicknameModal from "@/components/NicknameModal";
 
 function TalkySheetContent() {
   const router = useRouter();
@@ -13,6 +14,10 @@ function TalkySheetContent() {
 
   const [script, setScript] = useState<GeneratedScript | null>(null);
   const [nickname, setNickname] = useState("사용자");
+  const [userLevel, setUserLevel] = useState<UserLevel>("A1");
+  const [streakGoal, setStreakGoal] = useState(7);
+  const [isNicknameModalOpen, setIsNicknameModalOpen] = useState(false);
+
   const isMounted = typeof window !== "undefined";
   const [speakingLineId, setSpeakingLineId] = useState<number | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -36,6 +41,10 @@ function TalkySheetContent() {
     try {
       const savedNickname = localStorage.getItem("talkycat_nickname");
       if (savedNickname) setNickname(savedNickname);
+      const savedLevel = localStorage.getItem("talkycat_user_level") as UserLevel;
+      if (savedLevel) setUserLevel(savedLevel);
+      const savedGoal = localStorage.getItem("talkycat_streak_goal");
+      if (savedGoal) setStreakGoal(Number(savedGoal));
 
       if (id) {
         const individual = localStorage.getItem(`talkycat_script_${id}`);
@@ -98,6 +107,19 @@ function TalkySheetContent() {
   useEffect(() => {
     loadScriptData();
   }, [loadScriptData]);
+
+  const handleSaveProfile = (newNickname: string, newGoal: number, newLevel: UserLevel) => {
+    setNickname(newNickname);
+    setStreakGoal(newGoal);
+    setUserLevel(newLevel);
+    try {
+      localStorage.setItem("talkycat_nickname", newNickname);
+      localStorage.setItem("talkycat_streak_goal", newGoal.toString());
+      localStorage.setItem("talkycat_user_level", newLevel);
+    } catch (e) {
+      console.error("Failed to save profile", e);
+    }
+  };
 
   const handleSpeakEnglish = (text: string, lineId: number, index: number) => {
     if (typeof window === "undefined" || !("speechSynthesis" in window)) {
@@ -225,9 +247,18 @@ function TalkySheetContent() {
                 스크립트
               </h1>
             </div>
-            <div className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#e2e7ff] text-[#434655] font-label-sm text-xs shadow-sm">
-              <span>{nickname}님</span>
-            </div>
+            <button
+              className="flex items-center gap-1.5 p-1 rounded-full bg-orange-50/60 border border-orange-100 shadow-xs hover:bg-orange-100/60 transition cursor-pointer"
+              onClick={() => setIsNicknameModalOpen(true)}
+              type="button"
+              title="프로필 및 레벨 수정"
+            >
+              <span>🐾</span>
+              <span className="text-xs sm:text-sm font-bold text-gray-800 max-w-[70px] sm:max-w-[90px] truncate">{nickname}님</span>
+              <span className="text-[10px] sm:text-[11px] font-bold px-2 py-0.5 rounded-full bg-white text-orange-600 border border-orange-200/80 shadow-2xs whitespace-nowrap">
+                {(userLevel || "A1").replace("-", "~")}
+              </span>
+            </button>
           </div>
         </header>
 
@@ -589,6 +620,15 @@ function TalkySheetContent() {
         )}
 
       </div>
+
+      <NicknameModal
+        isOpen={isNicknameModalOpen}
+        initialNickname={nickname === "사용자" ? "" : nickname}
+        initialGoal={streakGoal}
+        initialLevel={userLevel}
+        onClose={() => setIsNicknameModalOpen(false)}
+        onSave={handleSaveProfile}
+      />
     </div>
   );
 }

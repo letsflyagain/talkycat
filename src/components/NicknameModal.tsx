@@ -1,30 +1,35 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
+import { UserLevel } from "@/types/script";
 
 interface NicknameModalProps {
   isOpen: boolean;
   initialNickname: string;
   initialGoal: number;
+  initialLevel?: UserLevel;
   onClose: () => void;
-  onSave: (newNickname: string, newGoal: number) => void;
+  onSave: (newNickname: string, newGoal: number, newLevel: UserLevel) => void;
 }
 
 export default function NicknameModal({
   isOpen,
   initialNickname,
   initialGoal,
+  initialLevel = "A1",
   onClose,
   onSave,
 }: NicknameModalProps) {
   const [nickname, setNickname] = useState(initialNickname);
   const [goal, setGoal] = useState(initialGoal);
+  const [level, setLevel] = useState<UserLevel>(initialLevel);
   const inputRef = React.useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     setNickname(initialNickname);
     setGoal(initialGoal);
-  }, [initialNickname, initialGoal, isOpen]);
+    setLevel(initialLevel || "A1");
+  }, [initialNickname, initialGoal, initialLevel, isOpen]);
 
   useEffect(() => {
     if (isOpen) {
@@ -40,7 +45,7 @@ export default function NicknameModal({
   const handleSave = () => {
     const trimmed = nickname.trim() || "사용자";
     const parsedGoal = Number(goal) > 0 ? Number(goal) : 7;
-    onSave(trimmed, parsedGoal);
+    onSave(trimmed, parsedGoal, level);
     onClose();
   };
 
@@ -65,7 +70,7 @@ export default function NicknameModal({
               프로필 & 학습 목표 설정 🐾
             </h3>
             <p className="font-body-sm text-sm text-[#434655]">
-              닉네임과 연속 학습 목표일수를 정해주세요.
+              닉네임, 학습 레벨 및 연속 학습 목표일수를 정해주세요.
             </p>
           </div>
           <button
@@ -96,6 +101,29 @@ export default function NicknameModal({
             placeholder="닉네임을 입력하세요"
             className="w-full px-4 py-2.5 rounded-xl border border-[#e2e7ff] bg-[#faf8ff] text-[#131b2e] font-body-md focus:outline-none focus:ring-2 focus:ring-[#004ac6]/40 focus:border-[#004ac6] transition-all"
           />
+        </div>
+
+        {/* CEFR Level Select Combo Box */}
+        <div className="flex flex-col gap-1.5">
+          <label
+            className="font-label-sm text-xs font-medium text-[#434655]"
+            htmlFor="level-select"
+          >
+            학습 레벨 (CEFR)
+          </label>
+          <select
+            id="level-select"
+            value={level}
+            onChange={(e) => setLevel(e.target.value as UserLevel)}
+            className="w-full px-4 py-2.5 rounded-xl border border-[#e2e7ff] bg-[#faf8ff] text-[#131b2e] font-body-md focus:outline-none focus:ring-2 focus:ring-[#004ac6]/40 focus:border-[#004ac6] transition-all cursor-pointer"
+          >
+            <option value="A1">A1 - 입문 (단어 및 매우 기초적인 일상 표현)</option>
+            <option value="A1-A2">A1~A2 - 초급 도약 (기초 표현에 간단한 상태/감정 덧붙이기)</option>
+            <option value="A2">A2 - 초급 (식당, 카페 등 친숙한 상황의 일상 회화)</option>
+            <option value="A2-B1">A2~B1 - 중급 진입 (짧은 문장을 이어 이유나 의견 말하기)</option>
+            <option value="B1">B1 - 중급 (여행, 취미 등 다양한 주제로 문맥 연결 대화)</option>
+            <option value="B2">B2 - 중상급 (자연스럽고 유창한 의사표현)</option>
+          </select>
         </div>
 
         {/* Goal Days Input */}

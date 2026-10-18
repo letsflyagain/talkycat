@@ -1,10 +1,13 @@
 import { NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
+import { UserLevel } from "@/types/script";
+import { getLevelInstruction } from "@/lib/levelPrompt";
 
 export async function POST(request: Request) {
   try {
     const body = await request.json().catch(() => ({}));
-    const { rawText = "" } = body;
+    const { rawText = "", userLevel: lvl = "A1" } = body;
+    const userLevel: UserLevel = typeof lvl === "string" ? (lvl as UserLevel) : "A1";
 
     if (!rawText || typeof rawText !== "string" || rawText.trim().length === 0) {
       return NextResponse.json({
@@ -23,6 +26,7 @@ export async function POST(request: Request) {
         script: {
           id: fallbackId,
           date: today,
+          level: userLevel,
           category: "생활영어",
           title: "가져온 대본 (임포트)",
           mission: "가져온 외부 텍스트를 기초 영어 회화로 연습하기",
@@ -47,14 +51,16 @@ export async function POST(request: Request) {
 
     const ai = new GoogleGenAI({ apiKey });
 
+    const levelInstruction = getLevelInstruction(userLevel);
+
     const systemInstruction = `
 You are an expert AI English tutor and script editor ('TalkyCat').
-Your task is to parse raw external text (such as YouTube transcripts, TV show quotes, textbook passages, or notes) provided by the user, and transform it into a structured, beginner-friendly roleplay script (CEFR A1~A2 level) formatted strictly as JSON.
+Your task is to parse raw external text (such as YouTube transcripts, TV show quotes, textbook passages, or notes) provided by the user, and transform it into a structured, beginner-friendly roleplay script (CEFR ${userLevel} level) formatted strictly as JSON.
 
 [CRITICAL RULES]
 1. Zero-Storage: Do not store or log personal sensitive data. Process transiently.
-2. Difficulty Adjustment (A1~A2 Level Fitting):
-   - Keep the original context and meaning, but simplify complex sentences, advanced vocabulary, or convoluted slang into clear, natural, easy-to-speak CEFR A1~A2 English dialogue lines (short active sentences, everyday essential vocabulary).
+2. Difficulty Adjustment (${userLevel} Level Fitting):
+   - Keep the original context and meaning, but adapt sentence structure, vocabulary, and phrasing to match CEFR ${userLevel} level: ${levelInstruction}
 3. Overview & Learning Points:
    - Extract or generate 2-3 essential 'corePatterns' (pattern + meaning).
    - Generate a useful 'pronunciationTip' (word, phonetic, tip).
@@ -91,14 +97,14 @@ Your task is to parse raw external text (such as YouTube transcripts, TV show qu
       "id": 1,
       "speaker": "user",
       "speakerName": "A",
-      "english": "Pure English dialogue line A",
+      "english": "Pure English dialogue line A adapted to ${userLevel}",
       "korean": "자연스러운 한국어 해석 A"
     },
     {
       "id": 2,
       "speaker": "cat",
       "speakerName": "B",
-      "english": "Pure English dialogue line B",
+      "english": "Pure English dialogue line B adapted to ${userLevel}",
       "korean": "자연스러운 한국어 해석 B"
     }
   ],
@@ -134,6 +140,9 @@ Task: Transform the above text into TalkyCat roleplay script JSON according to t
     try {
       const cleaned = responseText.replace(/```json/g, "").replace(/```/g, "").trim();
       parsed = JSON.parse(cleaned);
+      if (!parsed.level) {
+        parsed.level = userLevel;
+      }
     } catch {
       throw new Error("Failed to parse JSON from Gemini response");
     }

@@ -3,7 +3,8 @@
 import React, { useState, useEffect, Suspense, useCallback, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Image from "next/image";
-import { GeneratedScript, DialogueLine } from "@/types/script";
+import { GeneratedScript, DialogueLine, UserLevel } from "@/types/script";
+import NicknameModal from "@/components/NicknameModal";
 
 type LearningMode = "listen_all" | "shadowing" | "roleplay" | "role_switch";
 
@@ -14,6 +15,10 @@ function TalkyRoomContent() {
 
   const [script, setScript] = useState<GeneratedScript | null>(null);
   const [nickname, setNickname] = useState("사용자");
+  const [userLevel, setUserLevel] = useState<UserLevel>("A1");
+  const [streakGoal, setStreakGoal] = useState(7);
+  const [isNicknameModalOpen, setIsNicknameModalOpen] = useState(false);
+
   const [currentTurn, setCurrentTurn] = useState(0);
   const [speed, setSpeed] = useState<number>(1.0);
   const [showKorean, setShowKorean] = useState(false);
@@ -164,7 +169,6 @@ function TalkyRoomContent() {
     const targetWords = normTarget.split(/\s+/);
     const spokenWords = normSpoken.split(/\s+/);
 
-    // Minimum word count validation guard: at least 70% of target words count unless final with high match
     const minRequiredWords = Math.max(1, Math.floor(targetWords.length * 0.7));
     if (spokenWords.length < minRequiredWords && !isFinal) {
       return false;
@@ -174,14 +178,12 @@ function TalkyRoomContent() {
       if (spokenWords.length >= minRequiredWords || isFinal) return true;
     }
 
-    // Full match rate
     let matches = 0;
     for (const w of targetWords) {
       if (spokenWords.includes(w)) matches++;
     }
     const fullMatchRate = matches / Math.max(1, targetWords.length);
 
-    // First-word drop tolerance match rate (omitting first word if target has >= 2 words)
     let subMatchRate = 0;
     if (targetWords.length > 1) {
       const subTargetWords = targetWords.slice(1);
@@ -253,7 +255,6 @@ function TalkyRoomContent() {
       setIsListening(false);
       setStatusText("완벽하다냥! 🎉");
 
-      // Sentence transition buffer: 1.5 seconds delay before moving to next step / turn
       timerRef.current = setTimeout(() => {
         if (sessionId !== currentSessionIdRef.current) return;
         if (currentTurn < dialogueList.length - 1) {
@@ -296,7 +297,6 @@ function TalkyRoomContent() {
     startListeningImmediate();
   }, [isSpeakingMode, mode, startListeningImmediate]);
 
-  // Initialize Speech Recognition
   useEffect(() => {
     if (typeof window === "undefined") return;
     const SpeechRecognitionAPI = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
@@ -323,7 +323,6 @@ function TalkyRoomContent() {
         latestTranscriptRef.current = currentTranscript;
         setRecognizedText(currentTranscript);
 
-        // Silence debounce fallback (1.8s) for breathing and natural pauses
         if (silenceTimerRef.current) {
           clearTimeout(silenceTimerRef.current);
         }
@@ -377,6 +376,10 @@ function TalkyRoomContent() {
     try {
       const savedNickname = localStorage.getItem("talkycat_nickname");
       if (savedNickname) setNickname(savedNickname);
+      const savedLevel = localStorage.getItem("talkycat_user_level") as UserLevel;
+      if (savedLevel) setUserLevel(savedLevel);
+      const savedGoal = localStorage.getItem("talkycat_streak_goal");
+      if (savedGoal) setStreakGoal(Number(savedGoal));
 
       if (id) {
         const individual = localStorage.getItem(`talkycat_script_${id}`);
@@ -400,7 +403,6 @@ function TalkyRoomContent() {
         }
       }
 
-      // Fallback mock script with 8 turns for rich Tiki-Taka roleplay
       const fallback: GeneratedScript = {
         id: id || "1",
         date: new Date().toISOString().slice(0, 10).replace(/-/g, "."),
@@ -440,6 +442,19 @@ function TalkyRoomContent() {
     setIsMounted(true);
     loadScriptData();
   }, [loadScriptData]);
+
+  const handleSaveProfile = (newNickname: string, newGoal: number, newLevel: UserLevel) => {
+    setNickname(newNickname);
+    setStreakGoal(newGoal);
+    setUserLevel(newLevel);
+    try {
+      localStorage.setItem("talkycat_nickname", newNickname);
+      localStorage.setItem("talkycat_streak_goal", newGoal.toString());
+      localStorage.setItem("talkycat_user_level", newLevel);
+    } catch (e) {
+      console.error("Failed to save profile", e);
+    }
+  };
 
   const speakCurrentLine = useCallback(async (text: string, onEndCallback?: () => void) => {
     if (typeof window === "undefined" || !("speechSynthesis" in window)) {
@@ -488,7 +503,6 @@ function TalkyRoomContent() {
     }
   }, [speed, selectedVoice, teardownSTT]);
 
-  // Main playback & timing control flow with Session ID (Run Token)
   useEffect(() => {
     const sessionId = currentSessionIdRef.current;
     clearTimer();
@@ -539,9 +553,7 @@ function TalkyRoomContent() {
         });
       }, 1500);
     } else {
-      // Roleplay or Role Switch (Tiki-Taka Turn-Based Mode)
       if (effectiveSpeaker === "cat") {
-        // System (TalkyCat) Turn
         setStatusText("1.5초 후 토키캣이 대화합니다... 🐾");
         timerRef.current = setTimeout(() => {
           if (sessionId !== currentSessionIdRef.current) return;
@@ -581,7 +593,6 @@ function TalkyRoomContent() {
           });
         }, 1500);
       } else {
-        // User Turn (at index 0 or when starting)
         setStatusText("내 차례다냥! 1.5초 후 마이크가 켜집니다 🎙️");
         timerRef.current = setTimeout(() => {
           if (sessionId !== currentSessionIdRef.current) return;
@@ -670,7 +681,6 @@ function TalkyRoomContent() {
   const progressPercent = Math.round(((currentTurn + 1) / dialogueList.length) * 100);
   const nextLine = dialogueList[currentTurn + 1];
 
-  // Dynamic Speaker Determination based on mode and speech state
   const isUserActiveState = mode !== "listen_all" && isListening;
   const speakerBadgeLabel = isUserActiveState
     ? `${nickname} (${currentLine.speakerName && currentLine.speakerName.includes("손님") ? "손님" : "나"})`
@@ -710,12 +720,21 @@ function TalkyRoomContent() {
                 title="스크립트 시트 보기"
               >
                 <span className="material-symbols-outlined text-[16px] text-[#004ac6]">description</span>
-                <span className="font-label-md text-xs font-bold">스크립트</span>
+                <span className="font-label-md text-xs font-bold">대본</span>
               </button>
 
-              <div className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#e2e7ff] text-[#434655] font-label-sm text-xs shadow-sm">
-                <span>{nickname}님</span>
-              </div>
+              <button
+                className="flex items-center gap-1.5 p-1 rounded-full bg-orange-50/60 border border-orange-100 shadow-xs hover:bg-orange-100/60 transition cursor-pointer"
+                onClick={() => setIsNicknameModalOpen(true)}
+                type="button"
+                title="프로필 및 레벨 수정"
+              >
+                <span>🐾</span>
+                <span className="text-xs sm:text-sm font-bold text-gray-800 max-w-[70px] sm:max-w-[90px] truncate">{nickname}님</span>
+                <span className="text-[10px] sm:text-[11px] font-bold px-2 py-0.5 rounded-full bg-white text-orange-600 border border-orange-200/80 shadow-2xs whitespace-nowrap">
+                  {(userLevel || "A1").replace("-", "~")}
+                </span>
+              </button>
             </div>
           </div>
         </header>
@@ -1037,6 +1056,15 @@ function TalkyRoomContent() {
         )}
 
       </div>
+
+      <NicknameModal
+        isOpen={isNicknameModalOpen}
+        initialNickname={nickname === "사용자" ? "" : nickname}
+        initialGoal={streakGoal}
+        initialLevel={userLevel}
+        onClose={() => setIsNicknameModalOpen(false)}
+        onSave={handleSaveProfile}
+      />
     </div>
   );
 }
