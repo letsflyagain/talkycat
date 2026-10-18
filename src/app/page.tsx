@@ -54,6 +54,27 @@ export default function Home() {
   const longPressTimerRef = useRef<NodeJS.Timeout | null>(null);
   const isLongPressRef = useRef(false);
 
+  const configInputRef = useRef<HTMLInputElement>(null);
+  const importTextareaRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    if (isConfigModalOpen) {
+      const timer = setTimeout(() => {
+        configInputRef.current?.focus();
+      }, 250);
+      return () => clearTimeout(timer);
+    }
+  }, [isConfigModalOpen]);
+
+  useEffect(() => {
+    if (isImportModalOpen) {
+      const timer = setTimeout(() => {
+        importTextareaRef.current?.focus();
+      }, 250);
+      return () => clearTimeout(timer);
+    }
+  }, [isImportModalOpen]);
+
   useEffect(() => {
     try {
       window.history.pushState({ page: "talkycat_main" }, "", window.location.href);
@@ -771,7 +792,11 @@ export default function Home() {
         </main>
 
         {/* Bottom Fixed Action Deck (3-Button Grid) */}
-        <div className="fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-md border-t border-gray-100 shadow-[0_-4px_20px_rgba(0,0,0,0.06)] flex items-center justify-center">
+        <div className={`fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-md border-t border-gray-100 shadow-[0_-4px_20px_rgba(0,0,0,0.06)] flex items-center justify-center transition-all duration-200 ${
+          isConfigModalOpen || isImportModalOpen || isNicknameModalOpen || isGenerating || isDeleteModalOpen || pdfPromptScript
+            ? "hidden pointer-events-none opacity-0"
+            : ""
+        }`}>
           <div className="w-full max-w-[480px] grid grid-cols-3 gap-2 px-3 pt-2.5 pb-[max(1rem,env(safe-area-inset-bottom))]">
             <button
               className="h-13 bg-[#ffddb8] text-[#2a1700] font-label-sm text-[11px] font-bold rounded-2xl flex flex-col items-center justify-center gap-0.5 shadow-xs active:scale-95 transition-all cursor-pointer px-1"
@@ -943,11 +968,11 @@ export default function Home() {
                 <div className="flex flex-col gap-2">
                   <input
                     type="text"
+                    ref={configInputRef}
                     className="w-full h-12 bg-[#faf8ff] border border-[#eaedff] focus:border-[#004ac6] focus:ring-2 focus:ring-[#004ac6]/20 rounded-2xl px-4 text-xs sm:text-sm text-[#131b2e] placeholder:text-gray-400 font-normal outline-none transition"
                     placeholder="미입력 시 무작위로 생성됩니다."
                     value={customTopicInput}
                     onChange={(e) => setCustomTopicInput(e.target.value)}
-                    autoFocus
                   />
                   <p className="font-body-sm text-[11px] text-[#737686] leading-relaxed px-1">
                     💡 예: 여행에서 길 묻기, 카페에서 음료 주문하기, 동료와 점심 메뉴 고르기 등
@@ -1029,6 +1054,7 @@ export default function Home() {
                 {/* Textarea */}
                 <textarea
                   id="script-textarea"
+                  ref={importTextareaRef}
                   className="w-full h-44 bg-[#faf8ff] border border-[#eaedff] focus:border-[#004ac6] focus:ring-2 focus:ring-[#004ac6]/20 rounded-2xl p-3 text-xs sm:text-sm text-[#131b2e] placeholder:text-gray-400 font-normal outline-none transition resize-none"
                   placeholder="여기에 영어 대본이나 텍스트를 붙여넣으세요..."
                   value={importText}

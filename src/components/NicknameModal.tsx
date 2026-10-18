@@ -19,11 +19,21 @@ export default function NicknameModal({
 }: NicknameModalProps) {
   const [nickname, setNickname] = useState(initialNickname);
   const [goal, setGoal] = useState(initialGoal);
+  const inputRef = React.useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     setNickname(initialNickname);
     setGoal(initialGoal);
   }, [initialNickname, initialGoal, isOpen]);
+
+  useEffect(() => {
+    if (isOpen) {
+      const timer = setTimeout(() => {
+        inputRef.current?.focus();
+      }, 250);
+      return () => clearTimeout(timer);
+    }
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
@@ -77,13 +87,13 @@ export default function NicknameModal({
           </label>
           <input
             id="nickname-input"
+            ref={inputRef}
             type="text"
             maxLength={10}
             value={nickname}
             onChange={(e) => setNickname(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder="닉네임을 입력하세요"
-            autoFocus
             className="w-full px-4 py-2.5 rounded-xl border border-[#e2e7ff] bg-[#faf8ff] text-[#131b2e] font-body-md focus:outline-none focus:ring-2 focus:ring-[#004ac6]/40 focus:border-[#004ac6] transition-all"
           />
         </div>
