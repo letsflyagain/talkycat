@@ -41,8 +41,8 @@ export async function POST(request: Request) {
           },
           catTip: "가져온 대본을 가벼운 마음으로 소리 내어 읽어보라냥! 🐾",
           dialogue: [
-            { id: 1, speaker: "user", speakerName: "A", english: "Hello! Let's talk about this text.", korean: "안녕하세요! 이 텍스트에 대해 이야기해봐요." },
-            { id: 2, speaker: "cat", speakerName: "B", english: "Sure, I am ready to practice.", korean: "물론이죠, 연습할 준비가 되었어요." }
+            { id: 1, speaker: "cat", speakerName: "토키캣 (A)", english: "Hello! Let's talk about this text.", korean: "안녕하세요! 이 텍스트에 대해 이야기해봐요." },
+            { id: 2, speaker: "user", speakerName: "나 (B)", english: "Sure, I am ready to practice.", korean: "물론이죠, 연습할 준비가 되었어요." }
           ],
           completedCount: 0
         }
@@ -65,10 +65,11 @@ Your task is to parse raw external text (such as YouTube transcripts, TV show qu
    - Extract or generate 2-3 essential 'corePatterns' (pattern + meaning).
    - Generate a useful 'pronunciationTip' (word, phonetic, tip).
    - Generate a friendly 'catTip' (nuance/learning tip with a cat paw 🐾 vibe).
-4. Dialogue Normalization:
-   - Break down the conversation into alternating turns between two speakers labeled as "A" and "B".
-   - Even indices (0, 2, 4...) have speaker: "user", speakerName: "A".
-   - Odd indices (1, 3, 5...) have speaker: "cat", speakerName: "B".
+4. Strict Role Mapping & Dialogue Normalization:
+   - Break down the conversation into strictly alternating turns between two speakers.
+   - Even indices (0, 2, 4...) MUST have speaker: "cat" and speakerName: "토키캣 (A)" (System/AI speaker starting first in standard roleplay).
+   - Odd indices (1, 3, 5...) MUST have speaker: "user" and speakerName: "나 (B)" (User/Learner speaker responding second in standard roleplay).
+   - The dialogue MUST start with speaker "cat" at index 0. If the source text starts with user input, adapt or reorder it so that index 0 is speaker "cat" (System).
    - Provide natural Korean translations ('korean') for every dialogue line.
 5. Category:
    - Choose one of: "생활영어", "비즈니스", "여행/식당", "영화/드라마 명장면" based on the content.
@@ -95,15 +96,15 @@ Your task is to parse raw external text (such as YouTube transcripts, TV show qu
   "dialogue": [
     {
       "id": 1,
-      "speaker": "user",
-      "speakerName": "A",
+      "speaker": "cat",
+      "speakerName": "토키캣 (A)",
       "english": "Pure English dialogue line A adapted to ${userLevel}",
       "korean": "자연스러운 한국어 해석 A"
     },
     {
       "id": 2,
-      "speaker": "cat",
-      "speakerName": "B",
+      "speaker": "user",
+      "speakerName": "나 (B)",
       "english": "Pure English dialogue line B adapted to ${userLevel}",
       "korean": "자연스러운 한국어 해석 B"
     }
@@ -142,6 +143,17 @@ Task: Transform the above text into TalkyCat roleplay script JSON according to t
       parsed = JSON.parse(cleaned);
       if (!parsed.level) {
         parsed.level = userLevel;
+      }
+      if (Array.isArray(parsed.dialogue)) {
+        parsed.dialogue = parsed.dialogue.map((line: any, index: number) => {
+          const isEven = index % 2 === 0;
+          return {
+            ...line,
+            id: line.id || index + 1,
+            speaker: isEven ? "cat" : "user",
+            speakerName: isEven ? (line.speakerName?.includes("토키캣") ? line.speakerName : "토키캣 (A)") : (line.speakerName?.includes("나") || line.speakerName?.includes("사용자") ? line.speakerName : "나 (B)")
+          };
+        });
       }
     } catch {
       throw new Error("Failed to parse JSON from Gemini response");

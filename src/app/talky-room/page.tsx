@@ -9,6 +9,20 @@ import { playTurnCueSound } from "@/lib/sound";
 
 type LearningMode = "listen_all" | "shadowing" | "roleplay" | "role_switch";
 
+// Strict Role Mapping & Dialogue Normalization Helper
+export function normalizeDialogueSpeakers(dialogue: any[]) {
+  if (!Array.isArray(dialogue)) return [];
+  return dialogue.map((line, index) => {
+    const isEven = index % 2 === 0;
+    return {
+      ...line,
+      id: line.id || index + 1,
+      speaker: isEven ? "cat" : "user",
+      speakerName: isEven ? (line.speakerName?.includes("토키캣") ? line.speakerName : "토키캣 (A)") : (line.speakerName?.includes("나") || line.speakerName?.includes("사용자") ? line.speakerName : "나 (B)")
+    };
+  });
+}
+
 function TalkyRoomContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -34,6 +48,8 @@ function TalkyRoomContent() {
   const [recognizedText, setRecognizedText] = useState("");
   const [sttStatus, setSttStatus] = useState<"idle" | "listening" | "success">("idle");
 
+  // Clean Mode Reset Pipeline - Timer & Audio Management
+  const timerRefs = useRef<NodeJS.Timeout[]>([]);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const isFirstPlayRef = useRef<boolean>(true);
   const recognitionRef = useRef<any>(null);
@@ -43,14 +59,60 @@ function TalkyRoomContent() {
   const wakeLockRef = useRef<any>(null);
   const currentSessionIdRef = useRef<number>(0);
 
+  // Safe timer registration helper
+  const registerTimeout = (callback: () => void, delay: number) => {
+    const timer = setTimeout(callback, delay);
+    timerRefs.current.push(timer);
+    return timer;
+  };
+
+  const clearAllTimers = () => {
+    timerRefs.current.forEach((timer) => clearTimeout(timer));
+    timerRefs.current = [];
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+    if (silenceTimerRef.current) {
+      clearTimeout(silenceTimerRef.current);
+      silenceTimerRef.current = null;
+    }
+  };
+
+  // Immediate stop helper for all ongoing audio and async tasks
+  const forceStopAllAudioAndAsync = () => {
+    clearAllTimers();
+
+    if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      window.speechSynthesis.cancel();
+    }
+
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.stop();
+        recognitionRef.current.abort();
+      } catch {}
+    }
+    isRecognizingRef.current = false;
+    setIsListening(false);
+    setSpeaking(false);
+  };
+
+  // Unmount cleanup
   useEffect(() => {
-    let isMounted = true;
+    return () => {
+      forceStopAllAudioAndAsync();
+    };
+  }, []);
+
+  useEffect(() => {
+    let isMountedLocal = true;
 
     const requestWakeLock = async () => {
       if (typeof window !== "undefined" && "wakeLock" in navigator && typeof (navigator as any).wakeLock.request === "function") {
         try {
           const lock = await (navigator as any).wakeLock.request("screen");
-          if (isMounted) {
+          if (isMountedLocal) {
             wakeLockRef.current = lock;
             lock.addEventListener("release", () => {
               wakeLockRef.current = null;
@@ -75,7 +137,7 @@ function TalkyRoomContent() {
     document.addEventListener("visibilitychange", handleVisibilityChange);
 
     return () => {
-      isMounted = false;
+      isMountedLocal = false;
       document.removeEventListener("visibilitychange", handleVisibilityChange);
       if (wakeLockRef.current) {
         wakeLockRef.current.release().catch(() => {});
@@ -85,17 +147,6 @@ function TalkyRoomContent() {
   }, []);
 
   const isSpeakingMode = mode !== "listen_all";
-
-  const clearTimer = () => {
-    if (timerRef.current) {
-      clearTimeout(timerRef.current);
-      timerRef.current = null;
-    }
-    if (silenceTimerRef.current) {
-      clearTimeout(silenceTimerRef.current);
-      silenceTimerRef.current = null;
-    }
-  };
 
   const kickstartAudioHardware = () => {
     try {
@@ -148,11 +199,7 @@ function TalkyRoomContent() {
 
   const resetLearningSession = useCallback(() => {
     currentSessionIdRef.current += 1;
-    clearTimer();
-    teardownSTT();
-    if (typeof window !== "undefined" && "speechSynthesis" in window) {
-      window.speechSynthesis.cancel();
-    }
+    forceStopAllAudioAndAsync();
     setSpeaking(false);
     setSttStatus("idle");
     setRecognizedText("");
@@ -234,7 +281,7 @@ function TalkyRoomContent() {
     if (sessionId !== currentSessionIdRef.current) return;
     if (finishedTurn < dialogueList.length - 1) {
       setStatusText("1.5초 후 다음 문장으로 이동합니다... 🐾");
-      timerRef.current = setTimeout(() => {
+      registerTimeout(() => {
         if (sessionId !== currentSessionIdRef.current) return;
         setCurrentTurn(finishedTurn + 1);
         setShowKorean(false);
@@ -247,7 +294,7 @@ function TalkyRoomContent() {
   const evaluateSpeech = useCallback((transcript: string, isFinal: boolean = false) => {
     const sessionId = currentSessionIdRef.current;
     if (!script || !script.dialogue) return;
-    const dialogueList = script.dialogue;
+    const dialogueList = normalizeDialogueSpeakers(script.dialogue);
     const currentLine = dialogueList[currentTurn];
     const target = currentLine?.english || "";
 
@@ -257,7 +304,7 @@ function TalkyRoomContent() {
       setIsListening(false);
       setStatusText("완벽하다냥! 🎉");
 
-      timerRef.current = setTimeout(() => {
+      registerTimeout(() => {
         if (sessionId !== currentSessionIdRef.current) return;
         if (currentTurn < dialogueList.length - 1) {
           setCurrentTurn((prev) => prev + 1);
@@ -328,7 +375,7 @@ function TalkyRoomContent() {
         if (silenceTimerRef.current) {
           clearTimeout(silenceTimerRef.current);
         }
-        silenceTimerRef.current = setTimeout(() => {
+        silenceTimerRef.current = registerTimeout(() => {
           if (isRecognizingRef.current && currentTranscript) {
             evaluateSpeech(currentTranscript, false);
           }
@@ -371,7 +418,7 @@ function TalkyRoomContent() {
       window.speechSynthesis.onvoiceschanged = loadVoices;
     }
 
-    return () => clearTimer();
+    return () => clearAllTimers();
   }, []);
 
   const loadScriptData = useCallback(() => {
@@ -388,6 +435,7 @@ function TalkyRoomContent() {
         if (individual) {
           const parsed = JSON.parse(individual);
           if (parsed && Array.isArray(parsed.dialogue)) {
+            parsed.dialogue = normalizeDialogueSpeakers(parsed.dialogue);
             setScript(parsed);
             return;
           }
@@ -398,6 +446,7 @@ function TalkyRoomContent() {
           if (Array.isArray(parsedList)) {
             const found = parsedList.find((s) => s.id === id);
             if (found && Array.isArray(found.dialogue)) {
+              found.dialogue = normalizeDialogueSpeakers(found.dialogue);
               setScript(found);
               return;
             }
@@ -422,16 +471,12 @@ function TalkyRoomContent() {
           tip: "'s' 묵음 주의! (아일)"
         },
         catTip: "점원을 부를 땐 'Excuse me'로 부드럽게 시작해보라냥! 🐾",
-        dialogue: [
-          { id: 1, speaker: "user", speakerName: "나 (손님)", english: "Excuse me, where can I find the bottled water?", korean: "실례합니다, 생수는 어디에 있나요?" },
-          { id: 2, speaker: "cat", speakerName: "토키캣 (점원)", english: "Are you looking for cold water or room temperature water?", korean: "찬물 찾으세요, 상온 물 찾으세요?" },
-          { id: 3, speaker: "user", speakerName: "나 (손님)", english: "I'd like a bottle of cold water, please.", korean: "시원한 생수 한 병 주세요." },
-          { id: 4, speaker: "cat", speakerName: "토키캣 (점원)", english: "It's right over there in aisle 3, next to the cold drinks!", korean: "3번 통로 저기 바로 옆, 시원한 음료 코너 쪽에 있어요!" },
-          { id: 5, speaker: "user", speakerName: "나 (손님)", english: "Got it! How much is this one?", korean: "알겠습니다! 이건 얼마인가요?" },
-          { id: 6, speaker: "cat", speakerName: "토키캣 (점원)", english: "That will be 1,500 won. Anything else you need?", korean: "1,500원입니다. 다른 필요한 거 있으신가요?" },
-          { id: 7, speaker: "user", speakerName: "나 (손님)", english: "No, that's all. Can I pay by card?", korean: "아니요, 이게 다예요. 카드 결제 되나요?" },
-          { id: 8, speaker: "cat", speakerName: "토키캣 (점원)", english: "Sure, insert your card right here. Thank you!", korean: "네, 여기에 카드 넣어주세요. 감사합니다!" }
-        ],
+        dialogue: normalizeDialogueSpeakers([
+          { id: 1, speaker: "cat", speakerName: "토키캣 (A)", english: "Excuse me, where can I find the bottled water?", korean: "실례합니다, 생수는 어디에 있나요?" },
+          { id: 2, speaker: "user", speakerName: "나 (B)", english: "Are you looking for cold water or room temperature water?", korean: "찬물 찾으세요, 상온 물 찾으세요?" },
+          { id: 3, speaker: "cat", speakerName: "토키캣 (A)", english: "I'd like a bottle of cold water, please.", korean: "시원한 생수 한 병 주세요." },
+          { id: 4, speaker: "user", speakerName: "나 (B)", english: "It's right over there in aisle 3, next to the cold drinks!", korean: "3번 통로 저기 바로 옆, 시원한 음료 코너 쪽에 있어요!" }
+        ]),
         completedCount: 0
       };
       setScript(fallback);
@@ -495,38 +540,45 @@ function TalkyRoomContent() {
     if (isFirstPlayRef.current) {
       isFirstPlayRef.current = false;
       kickstartAudioHardware();
-      setTimeout(() => {
+      registerTimeout(() => {
         speak();
       }, 300);
     } else {
-      setTimeout(() => {
+      registerTimeout(() => {
         speak();
       }, 300);
     }
   }, [speed, selectedVoice, teardownSTT]);
 
+  // Main Conversation Flow Loop with Strict Role Mapping
   useEffect(() => {
     const sessionId = currentSessionIdRef.current;
-    clearTimer();
+    clearAllTimers();
     teardownSTT();
     setSttStatus("idle");
     setRecognizedText("");
     latestTranscriptRef.current = "";
 
     if (!script || !script.dialogue) return;
-    const dialogueList = script.dialogue;
+    const dialogueList = normalizeDialogueSpeakers(script.dialogue);
     if (currentTurn >= dialogueList.length) return;
 
     const currentLine = dialogueList[currentTurn];
-    let effectiveSpeaker = currentLine.speaker;
+    
+    // Strict alternating normalization guarantee based on currentTurn index:
+    // Even index (0, 2, 4...) -> 'cat' (A speaker: System in roleplay, User in role_switch)
+    // Odd index (1, 3, 5...) -> 'user' (B speaker: User in roleplay, System in role_switch)
+    const normalizedSpeaker = currentTurn % 2 === 0 ? "cat" : "user";
+    
+    let effectiveSpeaker = normalizedSpeaker;
     if (mode === "role_switch") {
-      effectiveSpeaker = currentLine.speaker === "cat" ? "user" : "cat";
+      effectiveSpeaker = normalizedSpeaker === "cat" ? "user" : "cat";
     }
 
     if (mode === "listen_all") {
       if (currentTurn === 0) {
         setStatusText("1.5초 후 전체듣기가 시작됩니다... 🐾");
-        timerRef.current = setTimeout(() => {
+        registerTimeout(() => {
           if (sessionId !== currentSessionIdRef.current) return;
           speakCurrentLine(currentLine.english, () => {
             if (sessionId !== currentSessionIdRef.current) return;
@@ -541,32 +593,34 @@ function TalkyRoomContent() {
       }
     } else if (mode === "shadowing") {
       setStatusText("1.5초 후 발화 준비... 🐾");
-      timerRef.current = setTimeout(() => {
+      registerTimeout(() => {
         if (sessionId !== currentSessionIdRef.current) return;
         speakCurrentLine(currentLine.english, () => {
           if (sessionId !== currentSessionIdRef.current) return;
           setIsListening(true);
           setSttStatus("listening");
           setStatusText("지금 말해보라냥! 🎙️");
-          setTimeout(() => {
+          registerTimeout(() => {
             if (sessionId !== currentSessionIdRef.current) return;
             startListeningImmediate();
           }, 300);
         });
       }, 1500);
     } else {
+      // Roleplay or Role Switch Mode
       if (effectiveSpeaker === "cat") {
+        // System turn
         setStatusText("1.5초 후 토키캣이 대화합니다... 🐾");
-        timerRef.current = setTimeout(() => {
+        registerTimeout(() => {
           if (sessionId !== currentSessionIdRef.current) return;
           speakCurrentLine(currentLine.english, () => {
             if (sessionId !== currentSessionIdRef.current) return;
             const nextIdx = currentTurn + 1;
             if (nextIdx < dialogueList.length) {
-              const nextLine = dialogueList[nextIdx];
-              let nextEffectiveSpeaker = nextLine.speaker;
+              const nextNormalized = nextIdx % 2 === 0 ? "cat" : "user";
+              let nextEffectiveSpeaker = nextNormalized;
               if (mode === "role_switch") {
-                nextEffectiveSpeaker = nextLine.speaker === "cat" ? "user" : "cat";
+                nextEffectiveSpeaker = nextNormalized === "cat" ? "user" : "cat";
               }
 
               if (nextEffectiveSpeaker === "user") {
@@ -575,7 +629,7 @@ function TalkyRoomContent() {
                 setShowKorean(false);
               } else {
                 setStatusText("1.5초 후 다음 턴으로 전환됩니다... 🐾");
-                timerRef.current = setTimeout(() => {
+                registerTimeout(() => {
                   if (sessionId !== currentSessionIdRef.current) return;
                   setCurrentTurn(nextIdx);
                   setShowKorean(false);
@@ -587,21 +641,22 @@ function TalkyRoomContent() {
           });
         }, 1500);
       } else {
+        // User turn
         setStatusText("내 차례다냥! 1.5초 후 마이크가 켜집니다 🎙️");
 
         if ((mode === "roleplay" || mode === "role_switch") && isSoundEnabled) {
-          timerRef.current = setTimeout(() => {
+          registerTimeout(() => {
             if (sessionId !== currentSessionIdRef.current) return;
             playTurnCueSound();
           }, 1200);
         }
 
-        timerRef.current = setTimeout(() => {
+        registerTimeout(() => {
           if (sessionId !== currentSessionIdRef.current) return;
           setIsListening(true);
           setSttStatus("listening");
           setStatusText("지금 말해보라냥! 🎙️");
-          timerRef.current = setTimeout(() => {
+          registerTimeout(() => {
             if (sessionId !== currentSessionIdRef.current) return;
             startListeningImmediate();
           }, 300);
@@ -612,25 +667,27 @@ function TalkyRoomContent() {
 
   const handleManualReplay = () => {
     const sessionId = currentSessionIdRef.current;
-    clearTimer();
+    clearAllTimers();
     teardownSTT();
     if (!script || !script.dialogue) return;
-    const currentLine = script.dialogue[currentTurn];
-    let effectiveSpeaker = currentLine.speaker;
+    const dialogueList = normalizeDialogueSpeakers(script.dialogue);
+    const currentLine = dialogueList[currentTurn];
+    const normalizedSpeaker = currentTurn % 2 === 0 ? "cat" : "user";
+    let effectiveSpeaker = normalizedSpeaker;
     if (mode === "role_switch") {
-      effectiveSpeaker = currentLine.speaker === "cat" ? "user" : "cat";
+      effectiveSpeaker = normalizedSpeaker === "cat" ? "user" : "cat";
     }
 
     if (mode === "listen_all" || mode === "shadowing" || effectiveSpeaker === "cat") {
       speakCurrentLine(currentLine.english, () => {
         if (sessionId !== currentSessionIdRef.current) return;
         if (mode === "listen_all") {
-          handleFullNextTurn(currentTurn, script.dialogue, sessionId);
+          handleFullNextTurn(currentTurn, dialogueList, sessionId);
         } else if (mode === "shadowing") {
           setIsListening(true);
           setSttStatus("listening");
           setStatusText("지금 말해보라냥! 🎙️");
-          setTimeout(() => {
+          registerTimeout(() => {
             if (sessionId !== currentSessionIdRef.current) return;
             startListeningImmediate();
           }, 300);
@@ -640,7 +697,7 @@ function TalkyRoomContent() {
       setIsListening(true);
       setSttStatus("listening");
       setStatusText("지금 말해보라냥! 🎙️");
-      setTimeout(() => {
+      registerTimeout(() => {
         if (sessionId !== currentSessionIdRef.current) return;
         startListeningImmediate();
       }, 300);
@@ -659,15 +716,28 @@ function TalkyRoomContent() {
     }
   };
 
-  const handleModeChange = (newMode: LearningMode) => {
-    if (newMode === mode) return;
-    resetLearningSession();
-    setMode(newMode);
+  // Clean Mode Reset Pipeline - Unified switch handler for bottom mode buttons
+  const handleSwitchMode = (targetMode: LearningMode) => {
+    // Step 1: Force stop all audio, TTS, STT, and timers instantly
+    forceStopAllAudioAndAsync();
+
+    // Step 2: Issue new session ID to invalidate pending async callbacks
+    currentSessionIdRef.current += 1;
     const sessionId = currentSessionIdRef.current;
-    setTimeout(() => {
+
+    // Step 3: Fully reset learning state (0th sentence)
+    setCurrentTurn(0);
+    setShowKorean(false);
+    setRecognizedText("");
+    setSttStatus("idle");
+
+    // Step 4: Assign target mode
+    setMode(targetMode);
+
+    // Step 5: Clean trigger after 100ms
+    registerTimeout(() => {
       if (sessionId !== currentSessionIdRef.current) return;
-      setCurrentTurn(0);
-    }, 200);
+    }, 100);
   };
 
   if (!isMounted || !script) {
@@ -678,7 +748,7 @@ function TalkyRoomContent() {
     );
   }
 
-  const dialogueList: DialogueLine[] = script.dialogue || [];
+  const dialogueList: DialogueLine[] = normalizeDialogueSpeakers(script.dialogue || []);
   const currentLine = dialogueList[currentTurn] || dialogueList[0];
   const progressPercent = Math.round(((currentTurn + 1) / dialogueList.length) * 100);
   const nextLine = dialogueList[currentTurn + 1];
@@ -904,6 +974,7 @@ function TalkyRoomContent() {
                       </div>
                     </div>
                   )}
+
                 </div>
 
               </div>
@@ -912,107 +983,107 @@ function TalkyRoomContent() {
           </div>
         </main>
 
-        {/* Fixed Bottom Deck: Combined Control Deck (3 buttons) & Action Buttons (4 buttons) */}
-        <div className="fixed bottom-0 left-0 right-0 z-40 bg-[#faf8ff]/95 backdrop-blur-md border-t border-[#e2e7ff]/60 p-2 pb-safe flex items-center justify-center shadow-lg">
-          <div className="w-full max-w-[480px] flex flex-col gap-2 bg-white/90 p-2.5 rounded-2xl border border-[#eaedff] shadow-sm">
-            {/* Control Deck (3 buttons) */}
-            <div className="w-full rounded-xl bg-[#f2f3ff] p-2 shadow-sm flex items-center justify-around border border-[#eaedff]">
-              <div className="flex flex-col items-center">
-                <button
-                  className="w-10 h-10 rounded-full bg-[#dae2fd] text-[#131b2e] flex items-center justify-center hover:bg-[#c3c6d7] active:scale-90 transition shadow-sm cursor-pointer"
-                  onClick={handleManualReplay}
-                  type="button"
-                  aria-label="다시듣기"
-                >
-                  <span className="material-symbols-outlined text-[20px]">replay</span>
-                </button>
-                <span className="font-label-sm text-[10px] text-[#434655] mt-1 font-bold">다시듣기</span>
-              </div>
-
-              <div className="flex flex-col items-center">
-                <button
-                  className={`w-12 h-12 rounded-full ${
-                    !isSpeakingMode && mode === "listen_all"
-                      ? "bg-slate-300 cursor-not-allowed opacity-50"
-                      : isListening
-                      ? "bg-emerald-600 animate-pulse shadow-md shadow-emerald-600/30"
-                      : "bg-[#004ac6] shadow-md shadow-[#004ac6]/30"
-                  } text-white flex items-center justify-center active:scale-95 transition cursor-pointer`}
-                  onClick={handleMicClick}
-                  type="button"
-                  aria-label="음성 인식 제어"
-                  disabled={!isSpeakingMode && mode === "listen_all"}
-                >
-                  <span className="material-symbols-outlined text-[22px]">
-                    {!isSpeakingMode && mode === "listen_all" ? "mic_off" : isListening ? "mic" : "mic"}
-                  </span>
-                </button>
-                <span className="font-label-sm text-[10px] text-[#004ac6] font-bold mt-1" id="mic-hint-text">
-                  {!isSpeakingMode && mode === "listen_all"
-                    ? "마이크 비활성화됨"
-                    : isListening
-                    ? "듣고 있어요... (터치시 일시정지)"
-                    : "버튼을 눌러 다시 말해보라냥! 🐾"}
-                </span>
-              </div>
-
-              <div className="flex flex-col items-center">
-                <button
-                  className="w-10 h-10 rounded-full bg-[#ffdad6] text-[#93000a] flex items-center justify-center hover:bg-[#ba1a1a] hover:text-white active:scale-90 transition shadow-sm cursor-pointer"
-                  onClick={() => router.replace("/")}
-                  type="button"
-                  aria-label="학습 종료"
-                >
-                  <span className="material-symbols-outlined text-[18px]">logout</span>
-                </button>
-                <span className="font-label-sm text-[10px] text-[#93000a] mt-1 font-bold">종료</span>
-              </div>
+        {/* Fixed Bottom Control Deck & Action Buttons */}
+        <div className="fixed bottom-0 w-full max-w-[480px] z-40 bg-[#faf8ff]/95 backdrop-blur-md border-t border-[#eaedff] p-3 flex flex-col gap-2 shadow-lg">
+          
+          {/* Control Deck (3 buttons: 다시듣기, 마이크 제어, 종료) */}
+          <div className="flex items-center justify-around w-full px-2">
+            <div className="flex flex-col items-center">
+              <button
+                className="w-10 h-10 rounded-full bg-[#dae2fd] text-[#131b2e] flex items-center justify-center hover:bg-[#c3c6d7] active:scale-90 transition shadow-sm cursor-pointer"
+                onClick={handleManualReplay}
+                type="button"
+                aria-label="다시듣기"
+              >
+                <span className="material-symbols-outlined text-[20px]">replay</span>
+              </button>
+              <span className="font-label-sm text-[10px] text-[#434655] mt-1 font-bold">다시듣기</span>
             </div>
 
-            {/* Action Buttons (4 buttons: 전체듣기, 따라하기, 롤플레이, 역할교대) */}
-            <div className="w-full grid grid-cols-4 gap-1.5">
+            <div className="flex flex-col items-center">
               <button
-                className={`py-2.5 px-1 rounded-xl ${
-                  mode === "listen_all" ? "bg-[#004ac6] text-white shadow-md shadow-[#004ac6]/25" : "bg-[#eaedff] hover:bg-[#e2e7ff]/80 text-[#131b2e]"
-                } font-label-md text-[11px] font-bold whitespace-nowrap active:scale-95 transition cursor-pointer flex flex-col items-center justify-center gap-0.5 shadow-sm`}
-                onClick={() => handleModeChange("listen_all")}
+                className={`w-12 h-12 rounded-full ${
+                  !isSpeakingMode && mode === "listen_all"
+                    ? "bg-slate-300 cursor-not-allowed opacity-50"
+                    : isListening
+                    ? "bg-emerald-600 animate-pulse shadow-md shadow-emerald-600/30"
+                    : "bg-[#004ac6] shadow-md shadow-[#004ac6]/30"
+                } text-white flex items-center justify-center active:scale-95 transition cursor-pointer`}
+                onClick={handleMicClick}
                 type="button"
+                aria-label="음성 인식 제어"
+                disabled={!isSpeakingMode && mode === "listen_all"}
               >
-                <span className="text-[15px]">🎧</span>
-                <span>전체듣기</span>
+                <span className="material-symbols-outlined text-[22px]">
+                  {!isSpeakingMode && mode === "listen_all" ? "mic_off" : isListening ? "mic" : "mic"}
+                </span>
               </button>
+              <span className="font-label-sm text-[10px] text-[#004ac6] font-bold mt-1" id="mic-hint-text">
+                {!isSpeakingMode && mode === "listen_all"
+                  ? "마이크 비활성화됨"
+                  : isListening
+                  ? "듣고 있어요... (터치시 일시정지)"
+                  : "버튼을 눌러 다시 말해보라냥! 🐾"}
+              </span>
+            </div>
+
+            <div className="flex flex-col items-center">
               <button
-                className={`py-2.5 px-1 rounded-xl ${
-                  mode === "shadowing" ? "bg-[#004ac6] text-white shadow-md shadow-[#004ac6]/25" : "bg-[#eaedff] hover:bg-[#e2e7ff]/80 text-[#131b2e]"
-                } font-label-md text-[11px] font-bold whitespace-nowrap active:scale-95 transition cursor-pointer flex flex-col items-center justify-center gap-0.5 shadow-sm`}
-                onClick={() => handleModeChange("shadowing")}
+                className="w-10 h-10 rounded-full bg-[#ffdad6] text-[#93000a] flex items-center justify-center hover:bg-[#ba1a1a] hover:text-white active:scale-90 transition shadow-sm cursor-pointer"
+                onClick={() => router.replace("/")}
                 type="button"
+                aria-label="학습 종료"
               >
-                <span className="text-[15px]">🗣️</span>
-                <span>따라하기</span>
+                <span className="material-symbols-outlined text-[18px]">logout</span>
               </button>
-              <button
-                className={`py-2.5 px-1 rounded-xl ${
-                  mode === "roleplay" ? "bg-[#004ac6] text-white shadow-md shadow-[#004ac6]/25" : "bg-[#eaedff] hover:bg-[#e2e7ff]/80 text-[#131b2e]"
-                } font-label-md text-[11px] font-bold whitespace-nowrap active:scale-95 transition cursor-pointer flex flex-col items-center justify-center gap-0.5 shadow-sm`}
-                onClick={() => handleModeChange("roleplay")}
-                type="button"
-              >
-                <span className="text-[15px]">🎭</span>
-                <span>롤플레이</span>
-              </button>
-              <button
-                className={`py-2.5 px-1 rounded-xl ${
-                  mode === "role_switch" ? "bg-[#004ac6] text-white shadow-md shadow-[#004ac6]/25" : "bg-[#eaedff] hover:bg-[#e2e7ff]/80 text-[#131b2e]"
-                } font-label-md text-[11px] font-bold whitespace-nowrap active:scale-95 transition cursor-pointer flex flex-col items-center justify-center gap-0.5 shadow-sm`}
-                onClick={() => handleModeChange("role_switch")}
-                type="button"
-              >
-                <span className="text-[15px]">🔄</span>
-                <span>역할교대</span>
-              </button>
+              <span className="font-label-sm text-[10px] text-[#93000a] mt-1 font-bold">종료</span>
             </div>
           </div>
+
+          {/* Action Buttons (4 buttons: 전체듣기, 따라하기, 롤플레이, 역할교대) */}
+          <div className="w-full grid grid-cols-4 gap-1.5">
+            <button
+              className={`py-2.5 px-1 rounded-xl ${
+                mode === "listen_all" ? "bg-[#004ac6] text-white shadow-md shadow-[#004ac6]/25" : "bg-[#eaedff] hover:bg-[#e2e7ff]/80 text-[#131b2e]"
+              } font-label-md text-[11px] font-bold whitespace-nowrap active:scale-95 transition cursor-pointer flex flex-col items-center justify-center gap-0.5 shadow-sm`}
+              onClick={() => handleSwitchMode("listen_all")}
+              type="button"
+            >
+              <span className="text-[15px]">🎧</span>
+              <span>전체듣기</span>
+            </button>
+            <button
+              className={`py-2.5 px-1 rounded-xl ${
+                mode === "shadowing" ? "bg-[#004ac6] text-white shadow-md shadow-[#004ac6]/25" : "bg-[#eaedff] hover:bg-[#e2e7ff]/80 text-[#131b2e]"
+              } font-label-md text-[11px] font-bold whitespace-nowrap active:scale-95 transition cursor-pointer flex flex-col items-center justify-center gap-0.5 shadow-sm`}
+              onClick={() => handleSwitchMode("shadowing")}
+              type="button"
+            >
+              <span className="text-[15px]">🗣️</span>
+              <span>따라하기</span>
+            </button>
+            <button
+              className={`py-2.5 px-1 rounded-xl ${
+                mode === "roleplay" ? "bg-[#004ac6] text-white shadow-md shadow-[#004ac6]/25" : "bg-[#eaedff] hover:bg-[#e2e7ff]/80 text-[#131b2e]"
+              } font-label-md text-[11px] font-bold whitespace-nowrap active:scale-95 transition cursor-pointer flex flex-col items-center justify-center gap-0.5 shadow-sm`}
+              onClick={() => handleSwitchMode("roleplay")}
+              type="button"
+            >
+              <span className="text-[15px]">🎭</span>
+              <span>롤플레이</span>
+            </button>
+            <button
+              className={`py-2.5 px-1 rounded-xl ${
+                mode === "role_switch" ? "bg-[#004ac6] text-white shadow-md shadow-[#004ac6]/25" : "bg-[#eaedff] hover:bg-[#e2e7ff]/80 text-[#131b2e]"
+              } font-label-md text-[11px] font-bold whitespace-nowrap active:scale-95 transition cursor-pointer flex flex-col items-center justify-center gap-0.5 shadow-sm`}
+              onClick={() => handleSwitchMode("role_switch")}
+              type="button"
+            >
+              <span className="text-[15px]">🔄</span>
+              <span>역할교대</span>
+            </button>
+          </div>
+
         </div>
 
         {/* MODAL: Celebratory Feedback Completion Modal */}
