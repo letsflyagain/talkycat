@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import Image from "next/image";
 import { GeneratedScript, DialogueLine, UserLevel } from "@/types/script";
 import NicknameModal from "@/components/NicknameModal";
+import { playTurnCueSound } from "@/lib/sound";
 
 type LearningMode = "listen_all" | "shadowing" | "roleplay" | "role_switch";
 
@@ -18,6 +19,7 @@ function TalkyRoomContent() {
   const [userLevel, setUserLevel] = useState<UserLevel>("A1");
   const [streakGoal, setStreakGoal] = useState(7);
   const [isNicknameModalOpen, setIsNicknameModalOpen] = useState(false);
+  const [isSoundEnabled, setIsSoundEnabled] = useState(true);
 
   const [currentTurn, setCurrentTurn] = useState(0);
   const [speed, setSpeed] = useState<number>(1.0);
@@ -571,14 +573,6 @@ function TalkyRoomContent() {
                 if (sessionId !== currentSessionIdRef.current) return;
                 setCurrentTurn(nextIdx);
                 setShowKorean(false);
-                setIsListening(true);
-                setSttStatus("listening");
-                setStatusText("지금 말해보라냥! 🎙️");
-
-                timerRef.current = setTimeout(() => {
-                  if (sessionId !== currentSessionIdRef.current) return;
-                  startListeningImmediate();
-                }, 300);
               } else {
                 setStatusText("1.5초 후 다음 턴으로 전환됩니다... 🐾");
                 timerRef.current = setTimeout(() => {
@@ -594,6 +588,14 @@ function TalkyRoomContent() {
         }, 1500);
       } else {
         setStatusText("내 차례다냥! 1.5초 후 마이크가 켜집니다 🎙️");
+
+        if ((mode === "roleplay" || mode === "role_switch") && isSoundEnabled) {
+          timerRef.current = setTimeout(() => {
+            if (sessionId !== currentSessionIdRef.current) return;
+            playTurnCueSound();
+          }, 1200);
+        }
+
         timerRef.current = setTimeout(() => {
           if (sessionId !== currentSessionIdRef.current) return;
           setIsListening(true);
@@ -606,7 +608,7 @@ function TalkyRoomContent() {
         }, 1500);
       }
     }
-  }, [currentTurn, script, mode, speakCurrentLine, startListeningImmediate, handleMissionComplete, handleFullNextTurn, teardownSTT]);
+  }, [currentTurn, script, mode, isSoundEnabled, speakCurrentLine, startListeningImmediate, handleMissionComplete, handleFullNextTurn, teardownSTT]);
 
   const handleManualReplay = () => {
     const sessionId = currentSessionIdRef.current;

@@ -15,6 +15,23 @@ interface ChatMessage {
   silentCorrection?: string | null;
 }
 
+interface FeedbackItem {
+  id: string;
+  originalText: string;
+  hasError: boolean;
+  correctedText: string;
+  naturalExpression: string;
+  koreanTip: string;
+}
+
+interface BookmarkedExpression {
+  id: string;
+  expression: string;
+  meaning?: string;
+  originalContext: string;
+  createdAt: string;
+}
+
 export default function FreeTalkPage() {
   const router = useRouter();
   const [nickname, setNickname] = useState("사용자");
@@ -35,10 +52,26 @@ export default function FreeTalkPage() {
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [toastVisible, setToastVisible] = useState(false);
 
+  // Review & Bookmark System States
+  const [isReviewModalOpen, setIsReviewModalOpen] = useState(false);
+  const [isReviewLoading, setIsReviewLoading] = useState(false);
+  const [feedbackList, setFeedbackList] = useState<FeedbackItem[]>([]);
+  const [activeReviewIndex, setActiveReviewIndex] = useState(0);
+  const [typedReviewText, setTypedReviewText] = useState("");
+  const [isReviewPaused, setIsReviewPaused] = useState(false);
+  const [reviewSpeed, setReviewSpeed] = useState<number>(1.0); // 1.0 -> 1.2 -> 0.8
+  const [onlyFeedbackFilter, setOnlyFeedbackFilter] = useState(false);
+  const [isReviewFinished, setIsReviewFinished] = useState(false);
+  const [bookmarkedMap, setBookmarkedMap] = useState<Record<string, boolean>>({});
+  const [bookmarkedItems, setBookmarkedItems] = useState<BookmarkedExpression[]>([]);
+  const [isExitConfirmOpen, setIsExitConfirmOpen] = useState(false);
+  const [exitActionType, setExitActionType] = useState<"back" | "reset">("back");
+
   const recognitionRef = useRef<any>(null);
   const isRecognizingRef = useRef<boolean>(false);
   const silenceTimerRef = useRef<NodeJS.Timeout | null>(null);
   const watchdogTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const reviewTimerRef = useRef<NodeJS.Timeout | null>(null);
   const latestTranscriptRef = useRef<string>("");
   const wakeLockRef = useRef<any>(null);
   const messagesRef = useRef<ChatMessage[]>([]);
@@ -46,6 +79,7 @@ export default function FreeTalkPage() {
   const userLevelRef = useRef<UserLevel>("A1");
   const isSpeakingRef = useRef<boolean>(false);
   const [isSpeakingState, setIsSpeakingState] = useState(false);
+  const reviewScrollRef = useRef<HTMLDivElement>(null);
 
   // Ironclad Guards against infinite loops and 429 quota exhaustion
   const isProcessingRef = useRef<boolean>(false);
@@ -65,7 +99,7 @@ export default function FreeTalkPage() {
     userLevelRef.current = userLevel;
   }, [userLevel]);
 
-  // Load nickname and userLevel
+  // Load profile and bookmarks from localStorage
   useEffect(() => {
     try {
       const saved = localStorage.getItem("talkycat_nickname");
@@ -77,8 +111,21 @@ export default function FreeTalkPage() {
       }
       const savedGoal = localStorage.getItem("talkycat_streak_goal");
       if (savedGoal) setStreakGoal(Number(savedGoal));
+
+      const savedBookmarks = localStorage.getItem("talkycat_bookmarked_expressions");
+      if (savedBookmarks) {
+        const parsed: BookmarkedExpression[] = JSON.parse(savedBookmarks);
+        if (Array.isArray(parsed)) {
+          setBookmarkedItems(parsed);
+          const map: Record<string, boolean> = {};
+          parsed.forEach((b) => {
+            map[b.expression] = true;
+          });
+          setBookmarkedMap(map);
+        }
+      }
     } catch (e) {
-      console.warn("Failed to load profile", e);
+      console.warn("Failed to load profile or bookmarks", e);
     }
   }, []);
 
@@ -160,6 +207,13 @@ export default function FreeTalkPage() {
     watchdogTimerRef.current = setTimeout(() => {
       onTimeout();
     }, ms);
+  };
+
+  const clearReviewTimer = () => {
+    if (reviewTimerRef.current) {
+      clearTimeout(reviewTimerRef.current);
+      reviewTimerRef.current = null;
+    }
   };
 
   const teardownSTT = useCallback(() => {
@@ -531,7 +585,166 @@ export default function FreeTalkPage() {
     sendUserMessageToAPI("Could you explain this in much simpler English and simpler words, please?");
   };
 
-  const handleResetConversation = () => {
+  // Trigger Review Modal
+  const handleOpenReview = async () => {
+    const userTurns = messages.filter((m) => m.role === "user");
+    if (userTurns.length === 0) {
+      showToast("복습할 대화 내역이 없다냥!");
+      return;
+    }
+
+    teardownSTT();
+    if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      window.speechSynthesis.cancel();
+    }
+
+    setIsReviewModalOpen(true);
+    setIsReviewLoading(true);
+    setFeedbackList([]);
+    setActiveReviewIndex(0);
+    setTypedReviewText("");
+    setIsReviewPaused(false);
+    setIsReviewFinished(false);
+
+    try {
+      const res = await fetch("/api/freetalk/feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          messages: messages,
+          userLevel: userLevel
+        })
+      });
+      const data = await res.json();
+      if (data.success && Array.isArray(data.feedback)) {
+        setFeedbackList(data.feedback);
+      }
+    } catch (e) {
+      console.error("Failed to fetch feedback for review", e);
+      showToast("피드백 분석 중 오류가 발생했습니다.");
+    } finally {
+      setIsReviewLoading(false);
+    }
+  };
+
+  // Review Sequential Playback Effect
+  useEffect(() => {
+    if (!isReviewModalOpen || isReviewLoading || isReviewFinished || isReviewPaused) return;
+
+    const reviewItems = onlyFeedbackFilter
+      ? messages.filter((m) => m.role === "user" && feedbackList.some((f) => f.originalText === m.messageEn && f.hasError))
+      : messages;
+
+    if (activeReviewIndex >= reviewItems.length) {
+      setIsReviewFinished(true);
+      if (typeof window !== "undefined" && "speechSynthesis" in window) {
+        window.speechSynthesis.cancel();
+      }
+      return;
+    }
+
+    const currentMsg = reviewItems[activeReviewIndex];
+    if (!currentMsg) return;
+
+    let isCancelled = false;
+    const fullText = currentMsg.messageEn;
+    setTypedReviewText("");
+
+    // Typing effect (25~35ms per char)
+    let charIdx = 0;
+    const typingInterval = setInterval(() => {
+      if (isCancelled || isReviewPaused) return;
+      if (charIdx <= fullText.length) {
+        setTypedReviewText(fullText.slice(0, charIdx));
+        charIdx++;
+      } else {
+        clearInterval(typingInterval);
+      }
+    }, Math.round(30 / reviewSpeed));
+
+    // TTS playback
+    if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      window.speechSynthesis.cancel();
+      const utterance = new SpeechSynthesisUtterance(cleanTextForTTS(fullText));
+      utterance.lang = "en-US";
+      utterance.rate = reviewSpeed;
+      window.speechSynthesis.speak(utterance);
+    }
+
+    // Auto scroll review container
+    if (reviewScrollRef.current) {
+      reviewScrollRef.current.scrollTop = reviewScrollRef.current.scrollHeight;
+    }
+
+    // Determine pause duration after item finishes
+    const pauseDuration = currentMsg.role === "user" ? 1200 : 600;
+    const estimatedTypingDuration = Math.max(1500, fullText.length * 35 / reviewSpeed);
+
+    clearReviewTimer();
+    reviewTimerRef.current = setTimeout(() => {
+      if (isCancelled || isReviewPaused) return;
+      setActiveReviewIndex((prev) => prev + 1);
+    }, estimatedTypingDuration + pauseDuration);
+
+    return () => {
+      isCancelled = true;
+      clearInterval(typingInterval);
+      clearReviewTimer();
+    };
+  }, [isReviewModalOpen, isReviewLoading, activeReviewIndex, isReviewPaused, onlyFeedbackFilter, messages, feedbackList, reviewSpeed]);
+
+  const handleSkipReview = () => {
+    clearReviewTimer();
+    if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      window.speechSynthesis.cancel();
+    }
+    setActiveReviewIndex(messages.length);
+    setIsReviewFinished(true);
+  };
+
+  const handleCloseReviewModal = () => {
+    clearReviewTimer();
+    if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      window.speechSynthesis.cancel();
+    }
+    setIsReviewModalOpen(false);
+  };
+
+  // Toggle Bookmark for Expression
+  const handleToggleBookmark = (expression: string, meaning: string, originalContext: string) => {
+    try {
+      const exists = bookmarkedMap[expression];
+      let updated: BookmarkedExpression[];
+      if (exists) {
+        updated = bookmarkedItems.filter((b) => b.expression !== expression);
+        setBookmarkedMap((prev) => ({ ...prev, [expression]: false }));
+        showToast("북마크에서 삭제했다냥!");
+      } else {
+        const newItem: BookmarkedExpression = {
+          id: Date.now().toString() + Math.random().toString(36).substr(2, 5),
+          expression,
+          meaning,
+          originalContext,
+          createdAt: new Date().toISOString().slice(0, 10)
+        };
+        updated = [...bookmarkedItems, newItem];
+        setBookmarkedMap((prev) => ({ ...prev, [expression]: true }));
+        showToast("북마크에 저장했다냥! ⭐️");
+      }
+      setBookmarkedItems(updated);
+      localStorage.setItem("talkycat_bookmarked_expressions", JSON.stringify(updated));
+    } catch (e) {
+      console.error("Failed to toggle bookmark", e);
+    }
+  };
+
+  const handleResetConversationClick = () => {
+    setExitActionType("reset");
+    setIsExitConfirmOpen(true);
+  };
+
+  const executeResetConversation = () => {
+    setIsExitConfirmOpen(false);
     if (isProcessingRef.current) return;
 
     teardownSTT();
@@ -568,6 +781,28 @@ export default function FreeTalkPage() {
       setStatusText("말씀하세요 🎙️ (탭하여 음소거)");
       startListeningImmediate();
     });
+  };
+
+  const handleBackClick = () => {
+    const userTurns = messages.filter((m) => m.role === "user");
+    if (userTurns.length > 0) {
+      setExitActionType("back");
+      setIsExitConfirmOpen(true);
+    } else {
+      executeExit();
+    }
+  };
+
+  const executeExit = () => {
+    setIsExitConfirmOpen(false);
+    clearWatchdog();
+    teardownSTT();
+    if (silenceTimerRef.current) {
+      clearTimeout(silenceTimerRef.current);
+      silenceTimerRef.current = null;
+    }
+    if (typeof window !== "undefined" && "speechSynthesis" in window) window.speechSynthesis.cancel();
+    router.replace("/");
   };
 
   const latestAssistantMsg = [...messages].reverse().find(m => m.role === "assistant");
@@ -629,16 +864,7 @@ export default function FreeTalkPage() {
             <div className="flex items-center gap-2">
               <button
                 className="w-9 h-9 rounded-full bg-[#eaedff] hover:bg-[#e2e7ff] text-[#131b2e] flex items-center justify-center transition-colors cursor-pointer active:scale-95"
-                onClick={() => {
-                  clearWatchdog();
-                  teardownSTT();
-                  if (silenceTimerRef.current) {
-                    clearTimeout(silenceTimerRef.current);
-                    silenceTimerRef.current = null;
-                  }
-                  if (typeof window !== "undefined" && "speechSynthesis" in window) window.speechSynthesis.cancel();
-                  router.replace("/");
-                }}
+                onClick={handleBackClick}
                 type="button"
                 aria-label="메인으로 돌아가기"
               >
@@ -647,12 +873,21 @@ export default function FreeTalkPage() {
               <div className="w-7 h-7 rounded-full overflow-hidden bg-[#dbe1ff] flex items-center justify-center">
                 <Image src="/talkycat-s.png" alt="TalkyCat" width={28} height={28} className="w-full h-full object-cover" />
               </div>
-              <h1 className="font-headline-sm text-sm font-bold text-[#131b2e] truncate max-w-[120px]">
+              <h1 className="font-headline-sm text-sm font-bold text-[#131b2e] truncate max-w-[100px]">
                 FreeTalk
               </h1>
             </div>
 
             <div className="flex items-center gap-1.5">
+              <button
+                className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#004ac6] text-white font-label-sm text-xs shadow-sm transition-all active:scale-95 cursor-pointer hover:bg-[#2563eb]"
+                onClick={handleOpenReview}
+                type="button"
+                aria-label="대화 복습하기"
+              >
+                <span className="material-symbols-outlined text-[15px]">headphones</span>
+                <span>대화 복습 🎧</span>
+              </button>
               <button
                 className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#f2f3ff] hover:bg-[#e2e7ff] text-[#004ac6] font-label-sm text-xs shadow-sm transition-all active:scale-95 cursor-pointer"
                 onClick={() => setIsHistoryModalOpen(true)}
@@ -663,14 +898,14 @@ export default function FreeTalkPage() {
                 <span>기록</span>
               </button>
               <button
-                className="flex items-center gap-1.5 p-1 rounded-full bg-orange-50/60 border border-orange-100 shadow-xs hover:bg-orange-100/60 transition cursor-pointer"
+                className="flex items-center gap-1 p-1 rounded-full bg-orange-50/60 border border-orange-100 shadow-xs hover:bg-orange-100/60 transition cursor-pointer"
                 onClick={() => setIsNicknameModalOpen(true)}
                 type="button"
                 title="프로필 및 레벨 수정"
               >
                 <span>🐾</span>
-                <span className="text-xs sm:text-sm font-bold text-gray-800 max-w-[70px] sm:max-w-[90px] truncate">{nickname}님</span>
-                <span className="text-[10px] sm:text-[11px] font-bold px-2 py-0.5 rounded-full bg-white text-orange-600 border border-orange-200/80 shadow-2xs whitespace-nowrap">
+                <span className="text-xs font-bold text-gray-800 max-w-[60px] truncate">{nickname}님</span>
+                <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-white text-orange-600 border border-orange-200/80">
                   {(userLevel || "A1").replace("-", "~")}
                 </span>
               </button>
@@ -699,7 +934,7 @@ export default function FreeTalkPage() {
             </div>
             <button
               className="bg-amber-100 hover:bg-amber-200 text-amber-800 text-[11px] font-bold px-2.5 py-1 rounded-full shadow-xs active:scale-95 transition-all cursor-pointer flex items-center gap-1 flex-shrink-0"
-              onClick={handleResetConversation}
+              onClick={handleResetConversationClick}
               type="button"
             >
               <span>🔄 대화 리셋</span>
@@ -819,7 +1054,7 @@ export default function FreeTalkPage() {
             </button>
             <button
               className="h-9 px-2 rounded-xl bg-amber-50 border border-amber-300/80 shadow-xs flex items-center justify-center gap-1 text-amber-900 hover:bg-amber-100 active:scale-95 transition-all cursor-pointer font-bold"
-              onClick={handleResetConversation}
+              onClick={handleResetConversationClick}
               type="button"
             >
               <span className="text-xs">🔄</span>
@@ -864,16 +1099,7 @@ export default function FreeTalkPage() {
             <div className="flex flex-col items-center">
               <button
                 className="w-11 h-11 rounded-full bg-[#ffdad6] text-[#93000a] flex items-center justify-center hover:bg-[#ba1a1a] hover:text-white active:scale-90 transition shadow-xs cursor-pointer"
-                onClick={() => {
-                  clearWatchdog();
-                  teardownSTT();
-                  if (silenceTimerRef.current) {
-                    clearTimeout(silenceTimerRef.current);
-                    silenceTimerRef.current = null;
-                  }
-                  if (typeof window !== "undefined" && "speechSynthesis" in window) window.speechSynthesis.cancel();
-                  router.replace("/");
-                }}
+                onClick={handleBackClick}
                 type="button"
                 aria-label="통화 종료"
               >
@@ -885,6 +1111,259 @@ export default function FreeTalkPage() {
         </footer>
 
       </div>
+
+      {/* 🎧 REVIEW & BOOKMARK MODAL (Fullscreen Overlay) */}
+      {isReviewModalOpen && (
+        <div className="fixed inset-0 z-50 bg-white flex flex-col animate-in fade-in select-none">
+          {/* Review Header */}
+          <header className="h-14 px-4 border-b border-[#eaedff] bg-white flex items-center justify-between flex-shrink-0">
+            <div className="flex items-center gap-2">
+              <span className="text-xl">🎧</span>
+              <h2 className="font-headline-md text-sm font-bold text-[#131b2e]">대화 복습하기 🐾</h2>
+            </div>
+            <div className="flex items-center gap-1.5">
+              {/* Pause / Resume */}
+              <button
+                className="px-2.5 py-1 rounded-full bg-[#f2f3ff] text-[#004ac6] font-label-sm text-xs font-bold hover:bg-[#e2e7ff] transition cursor-pointer active:scale-95"
+                onClick={() => setIsReviewPaused(!isReviewPaused)}
+                type="button"
+              >
+                {isReviewPaused ? "재생 ▶️" : "일시정지 ⏸️"}
+              </button>
+              {/* Speed cycling */}
+              <button
+                className="px-2.5 py-1 rounded-full bg-[#f2f3ff] text-[#004ac6] font-label-sm text-xs font-bold hover:bg-[#e2e7ff] transition cursor-pointer active:scale-95"
+                onClick={() => {
+                  if (reviewSpeed === 1.0) setReviewSpeed(1.2);
+                  else if (reviewSpeed === 1.2) setReviewSpeed(0.8);
+                  else setReviewSpeed(1.0);
+                }}
+                type="button"
+                title="배속 조절"
+              >
+                {reviewSpeed === 1.0 ? "1.0x" : reviewSpeed === 1.2 ? "1.2x" : "0.8x"}
+              </button>
+              {/* Only Feedback Filter */}
+              <button
+                className={`px-2.5 py-1 rounded-full font-label-sm text-xs font-bold transition cursor-pointer active:scale-95 ${
+                  onlyFeedbackFilter ? "bg-[#004ac6] text-white" : "bg-[#f2f3ff] text-[#434655] hover:bg-[#e2e7ff]"
+                }`}
+                onClick={() => {
+                  setOnlyFeedbackFilter(!onlyFeedbackFilter);
+                  setActiveReviewIndex(0);
+                  setIsReviewFinished(false);
+                }}
+                type="button"
+              >
+                피드백만 보기
+              </button>
+              {/* Skip / Full View */}
+              <button
+                className="px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-800 border border-emerald-200 font-label-sm text-xs font-bold hover:bg-emerald-100 transition cursor-pointer active:scale-95"
+                onClick={handleSkipReview}
+                type="button"
+              >
+                전체보기(스킵)
+              </button>
+              {/* Close */}
+              <button
+                className="w-8 h-8 rounded-full bg-slate-100 text-slate-700 flex items-center justify-center hover:bg-slate-200 transition cursor-pointer active:scale-90"
+                onClick={handleCloseReviewModal}
+                type="button"
+                aria-label="닫기"
+              >
+                <span className="material-symbols-outlined text-[18px]">close</span>
+              </button>
+            </div>
+          </header>
+
+          {/* Review Content Area */}
+          <div ref={reviewScrollRef} className="flex-1 overflow-y-auto p-4 flex flex-col gap-4 bg-[#faf8ff] pb-32">
+            {isReviewLoading ? (
+              <div className="flex-1 flex flex-col items-center justify-center gap-3 py-20">
+                <div className="w-16 h-16 rounded-full bg-[#004ac6]/10 flex items-center justify-center text-3xl animate-bounce">
+                  🐾
+                </div>
+                <p className="font-headline-sm text-sm text-[#004ac6] font-bold text-center animate-pulse">
+                  토키캣이 오늘 나눈 대화를 꼼꼼히 분석하고 있다냥... 🐾
+                </p>
+              </div>
+            ) : (
+              <>
+                {(onlyFeedbackFilter
+                  ? messages.filter((m) => m.role === "user" && feedbackList.some((f) => f.originalText === m.messageEn && f.hasError))
+                  : messages
+                ).slice(0, activeReviewIndex + 1).map((m, idx, arr) => {
+                  const isCurrent = idx === arr.length - 1 && !isReviewFinished;
+                  const matchingFeedback = m.role === "user" ? feedbackList.find((f) => f.originalText === m.messageEn) : null;
+                  const isBookmarkedRec = matchingFeedback ? !!bookmarkedMap[matchingFeedback.naturalExpression] : false;
+                  const isBookmarkedCorr = matchingFeedback ? !!bookmarkedMap[matchingFeedback.correctedText] : false;
+
+                  return (
+                    <div key={m.id || idx} className={`flex flex-col gap-2 animate-in fade-in ${m.role === "user" ? "items-end" : "items-start"}`}>
+                      {/* Bubble */}
+                      <div className={`max-w-[85%] rounded-2xl p-4 shadow-sm border ${
+                        m.role === "assistant"
+                          ? "bg-white text-[#131b2e] border-[#eaedff]"
+                          : "bg-[#004ac6] text-white border-[#004ac6]"
+                      }`}>
+                        <div className="flex items-center justify-between gap-2 mb-1">
+                          <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                            m.role === "assistant" ? "bg-[#f2f3ff] text-[#004ac6]" : "bg-white/20 text-white"
+                          }`}>
+                            {m.role === "assistant" ? "TalkyCat 🐾" : `${nickname} 🎤`}
+                          </span>
+                          <span className={`text-[10px] ${m.role === "assistant" ? "text-slate-400" : "text-white/70"}`}>
+                            {m.messageKo}
+                          </span>
+                        </div>
+                        <p className="font-headline-sm text-base leading-snug">
+                          {isCurrent && !isReviewFinished ? typedReviewText : m.messageEn}
+                        </p>
+                      </div>
+
+                      {/* Coaching Card for User Utterances */}
+                      {m.role === "user" && matchingFeedback && (
+                        <div className="w-full max-w-[95%] bg-white rounded-2xl p-4 shadow-md border border-amber-200/80 flex flex-col gap-3 animate-in slide-in-from-bottom-2">
+                          <div className="flex items-center justify-between">
+                            <span className="font-label-sm text-xs font-bold text-amber-800 flex items-center gap-1">
+                              <span>🐱</span> 토키캣의 코칭 카드
+                            </span>
+                            <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${matchingFeedback.hasError ? "bg-rose-100 text-rose-800" : "bg-emerald-100 text-emerald-800"}`}>
+                              {matchingFeedback.hasError ? "문법 교정 필요" : "완벽한 표현 🌟"}
+                            </span>
+                          </div>
+
+                          {matchingFeedback.hasError && (
+                            <div className="flex flex-col gap-1 p-2.5 rounded-xl bg-rose-50 border border-rose-100">
+                              <div className="flex items-center justify-between">
+                                <span className="text-[11px] font-bold text-rose-900">✏️ 교정 표현 (Correction)</span>
+                                <button
+                                  className={`w-7 h-7 rounded-full flex items-center justify-center transition cursor-pointer active:scale-90 ${
+                                    isBookmarkedCorr ? "bg-amber-500 text-white shadow-xs" : "bg-slate-200 text-slate-600 hover:bg-slate-300"
+                                  }`}
+                                  onClick={() => handleToggleBookmark(matchingFeedback.correctedText, matchingFeedback.koreanTip, matchingFeedback.originalText)}
+                                  type="button"
+                                  title="표현 북마크 저장"
+                                >
+                                  <span className="material-symbols-outlined text-[16px]">
+                                    {isBookmarkedCorr ? "star" : "grade"}
+                                  </span>
+                                </button>
+                              </div>
+                              <p className="text-sm font-bold text-rose-950">{matchingFeedback.correctedText}</p>
+                            </div>
+                          )}
+
+                          <div className="flex flex-col gap-1 p-2.5 rounded-xl bg-emerald-50 border border-emerald-100">
+                            <div className="flex items-center justify-between">
+                              <span className="text-[11px] font-bold text-emerald-900">🌟 원어민 추천 표현 (Natural)</span>
+                              <div className="flex items-center gap-1">
+                                <button
+                                  className="w-7 h-7 rounded-full bg-emerald-200 text-emerald-900 flex items-center justify-center hover:bg-emerald-300 transition cursor-pointer active:scale-90"
+                                  onClick={() => speakText(matchingFeedback.naturalExpression, 1.0)}
+                                  type="button"
+                                  title="발음 듣기"
+                                >
+                                  <span className="material-symbols-outlined text-[15px]">volume_up</span>
+                                </button>
+                                <button
+                                  className={`w-7 h-7 rounded-full flex items-center justify-center transition cursor-pointer active:scale-90 ${
+                                    isBookmarkedRec ? "bg-amber-500 text-white shadow-xs" : "bg-slate-200 text-slate-600 hover:bg-slate-300"
+                                  }`}
+                                  onClick={() => handleToggleBookmark(matchingFeedback.naturalExpression, matchingFeedback.koreanTip, matchingFeedback.originalText)}
+                                  type="button"
+                                  title="표현 북마크 저장"
+                                >
+                                  <span className="material-symbols-outlined text-[16px]">
+                                    {isBookmarkedRec ? "star" : "grade"}
+                                  </span>
+                                </button>
+                              </div>
+                            </div>
+                            <p className="text-sm font-bold text-emerald-950">{matchingFeedback.naturalExpression}</p>
+                          </div>
+
+                          <p className="text-xs text-[#434655] font-medium leading-relaxed bg-[#f2f3ff]/60 p-2.5 rounded-xl">
+                            {matchingFeedback.koreanTip}
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+
+                {/* Review Complete Banner */}
+                {isReviewFinished && (
+                  <div className="w-full bg-white rounded-3xl p-6 shadow-xl border border-emerald-200 flex flex-col items-center text-center gap-4 animate-in zoom-in-95 mt-4">
+                    <div className="w-20 h-20 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center text-4xl shadow-inner animate-bounce">
+                      🎉
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <h3 className="font-headline-md text-xl font-bold text-[#131b2e]">
+                        복습 완료! 수고했다냥! 🌟
+                      </h3>
+                      <p className="font-body-sm text-xs text-[#737686]">
+                        오늘 나눈 대화 복습을 완벽하게 마쳤습니다. 북마크한 표현들은 단어장에서 언제든 다시 볼 수 있어요!
+                      </p>
+                    </div>
+
+                    {/* Bookmarked Expressions Summary in Current Session */}
+                    {bookmarkedItems.length > 0 && (
+                      <div className="w-full bg-[#f2f3ff] rounded-2xl p-4 flex flex-col gap-2 border border-[#eaedff] text-left">
+                        <div className="flex items-center justify-between pb-2 border-b border-[#eaedff]">
+                          <span className="font-label-md text-xs font-bold text-[#004ac6]">
+                            ⭐️ 북마크한 표현 모아보기 ({bookmarkedItems.length}개)
+                          </span>
+                        </div>
+                        <div className="flex flex-col gap-2 max-h-48 overflow-y-auto">
+                          {bookmarkedItems.map((b) => (
+                            <div key={b.id} className="p-2.5 rounded-xl bg-white shadow-2xs border border-[#eaedff] flex items-center justify-between gap-2">
+                              <div className="flex flex-col min-w-0">
+                                <span className="font-headline-sm text-xs font-bold text-[#131b2e] truncate">{b.expression}</span>
+                                <span className="text-[10px] text-[#737686] truncate">원문: &quot;{b.originalContext}&quot;</span>
+                              </div>
+                              <button
+                                className="w-7 h-7 rounded-full bg-[#004ac6]/10 text-[#004ac6] flex items-center justify-center hover:bg-[#004ac6] hover:text-white transition flex-shrink-0 cursor-pointer"
+                                onClick={() => speakText(b.expression, 1.0)}
+                                type="button"
+                                title="발음 듣기"
+                              >
+                                <span className="material-symbols-outlined text-[15px]">volume_up</span>
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="flex gap-2 w-full pt-2">
+                      <button
+                        className="flex-1 py-3 rounded-2xl bg-[#eaedff] text-[#131b2e] font-label-md text-sm font-bold hover:bg-[#e2e7ff] transition cursor-pointer"
+                        onClick={() => {
+                          setActiveReviewIndex(0);
+                          setIsReviewFinished(false);
+                          setTypedReviewText("");
+                        }}
+                        type="button"
+                      >
+                        다시 복습하기 🔄
+                      </button>
+                      <button
+                        className="flex-1 py-3 rounded-2xl bg-[#004ac6] text-white font-label-md text-sm font-bold shadow-md hover:bg-[#2563eb] transition cursor-pointer"
+                        onClick={handleCloseReviewModal}
+                        type="button"
+                      >
+                        복습 종료 🐾
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* 📜 대화 기록 (History) Modal Sheet */}
       {isHistoryModalOpen && (
@@ -922,6 +1401,51 @@ export default function FreeTalkPage() {
             >
               닫기 🐾
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Exit or Reset Confirmation Modal with Review Prompt */}
+      {isExitConfirmOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-in fade-in">
+          <div className="w-full max-w-[360px] bg-white rounded-3xl p-6 shadow-2xl flex flex-col items-center text-center gap-4">
+            <div className="w-16 h-16 rounded-full bg-amber-100 text-amber-700 flex items-center justify-center text-3xl shadow-inner">
+              🐾
+            </div>
+            <div className="flex flex-col gap-1">
+              <h3 className="font-headline-md text-lg font-bold text-[#131b2e]">
+                오늘 나눈 대화를 고양이와 함께 복습해볼래냥? 🐾
+              </h3>
+              <p className="font-body-sm text-xs text-[#737686]">
+                대화를 마무리하기 전에 토키캣과 함께 문법 교정과 원어민 추천 표현을 복습해보세요!
+              </p>
+            </div>
+            <div className="flex flex-col gap-2.5 w-full pt-2">
+              <button
+                className="w-full py-3 rounded-2xl bg-[#004ac6] text-white font-label-md text-sm font-bold shadow-md hover:bg-[#2563eb] transition cursor-pointer flex items-center justify-center gap-1.5"
+                onClick={() => {
+                  setIsExitConfirmOpen(false);
+                  handleOpenReview();
+                }}
+                type="button"
+              >
+                <span>🎧</span>
+                <span>복습하기 🎧</span>
+              </button>
+              <button
+                className="w-full py-2.5 rounded-2xl bg-slate-100 text-slate-700 font-label-md text-xs font-bold hover:bg-slate-200 transition cursor-pointer"
+                onClick={() => {
+                  if (exitActionType === "reset") {
+                    executeResetConversation();
+                  } else {
+                    executeExit();
+                  }
+                }}
+                type="button"
+              >
+                {exitActionType === "reset" ? "그냥 대화 리셋하기" : "그냥 종료하기"}
+              </button>
+            </div>
           </div>
         </div>
       )}
