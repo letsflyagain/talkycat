@@ -564,10 +564,6 @@ function TalkyRoomContent() {
     if (currentTurn >= dialogueList.length) return;
 
     const currentLine = dialogueList[currentTurn];
-    
-    // Strict alternating normalization guarantee based on currentTurn index:
-    // Even index (0, 2, 4...) -> 'cat' (A speaker: System in roleplay, User in role_switch)
-    // Odd index (1, 3, 5...) -> 'user' (B speaker: User in roleplay, System in role_switch)
     const normalizedSpeaker = currentTurn % 2 === 0 ? "cat" : "user";
     
     let effectiveSpeaker = normalizedSpeaker;
@@ -607,9 +603,7 @@ function TalkyRoomContent() {
         });
       }, 1500);
     } else {
-      // Roleplay or Role Switch Mode
       if (effectiveSpeaker === "cat") {
-        // System turn
         setStatusText("1.5초 후 토키캣이 대화합니다... 🐾");
         registerTimeout(() => {
           if (sessionId !== currentSessionIdRef.current) return;
@@ -641,7 +635,6 @@ function TalkyRoomContent() {
           });
         }, 1500);
       } else {
-        // User turn
         setStatusText("내 차례다냥! 1.5초 후 마이크가 켜집니다 🎙️");
 
         if ((mode === "roleplay" || mode === "role_switch") && isSoundEnabled) {
@@ -716,25 +709,17 @@ function TalkyRoomContent() {
     }
   };
 
-  // Clean Mode Reset Pipeline - Unified switch handler for bottom mode buttons
   const handleSwitchMode = (targetMode: LearningMode) => {
-    // Step 1: Force stop all audio, TTS, STT, and timers instantly
     forceStopAllAudioAndAsync();
-
-    // Step 2: Issue new session ID to invalidate pending async callbacks
     currentSessionIdRef.current += 1;
     const sessionId = currentSessionIdRef.current;
 
-    // Step 3: Fully reset learning state (0th sentence)
     setCurrentTurn(0);
     setShowKorean(false);
     setRecognizedText("");
     setSttStatus("idle");
-
-    // Step 4: Assign target mode
     setMode(targetMode);
 
-    // Step 5: Clean trigger after 100ms
     registerTimeout(() => {
       if (sessionId !== currentSessionIdRef.current) return;
     }, 100);
@@ -766,44 +751,36 @@ function TalkyRoomContent() {
     <div className="min-h-screen bg-[#faf8ff] text-[#131b2e] flex flex-col items-center justify-start relative select-none">
       <div className="w-full max-w-[480px] min-h-screen bg-[#faf8ff] relative shadow-xl border-x border-[#eaedff]/60 flex flex-col pb-72">
         
-        {/* Top Header */}
+        {/* Top Header (Standardized 2-part layout) */}
         <header className="fixed top-0 w-full max-w-[480px] z-40 pt-safe bg-[#faf8ff]/90 backdrop-blur-md border-b border-[#eaedff]">
           <div className="h-16 px-4 flex items-center justify-between">
-            <div className="flex items-center gap-2">
+            {/* 좌측 (Left): 뒤로가기 버튼(←) + 로고/페이지 타이틀 */}
+            <div className="flex items-center gap-2 min-w-0">
               <button
-                className="w-10 h-10 rounded-full bg-[#eaedff] hover:bg-[#e2e7ff] text-[#131b2e] flex items-center justify-center transition-colors cursor-pointer active:scale-95"
+                className="w-10 h-10 rounded-full bg-[#eaedff] hover:bg-[#e2e7ff] text-[#131b2e] flex items-center justify-center transition-colors cursor-pointer active:scale-95 shrink-0"
                 onClick={() => router.replace("/")}
                 type="button"
                 aria-label="메인으로 돌아가기"
               >
                 <span className="material-symbols-outlined text-[20px]">arrow_back</span>
               </button>
-              <Image src="/logo.png" alt="Logo" width={26} height={26} className="h-6 w-auto object-contain" />
-              <h1 className="font-headline-sm text-sm font-bold text-[#131b2e] truncate max-w-[110px]">
-                Talky Room
+              <Image src="/logo.png" alt="Logo" width={26} height={26} className="h-6 w-auto object-contain shrink-0" />
+              <h1 className="font-headline-sm text-sm font-bold text-[#131b2e] truncate whitespace-nowrap min-w-0">
+                토키룸
               </h1>
             </div>
 
-            <div className="flex items-center gap-2">
+            {/* 우측 (Right): 사용자 프로필 칩 */}
+            <div className="flex items-center gap-2 shrink-0">
               <button
-                className="flex items-center gap-1 px-3 py-1.5 rounded-full bg-[#e2e7ff] text-[#131b2e] hover:bg-[#dae2fd] active:scale-95 transition shadow-sm cursor-pointer"
-                onClick={() => router.push(`/talky-sheet?id=${script.id}`)}
-                type="button"
-                title="스크립트 시트 보기"
-              >
-                <span className="material-symbols-outlined text-[16px] text-[#004ac6]">description</span>
-                <span className="font-label-md text-xs font-bold">대본</span>
-              </button>
-
-              <button
-                className="flex items-center gap-1.5 p-1 rounded-full bg-orange-50/60 border border-orange-100 shadow-xs hover:bg-orange-100/60 transition cursor-pointer"
+                className="flex items-center gap-1.5 p-1 rounded-full bg-orange-50/60 border border-orange-100 shadow-xs hover:bg-orange-100/60 transition cursor-pointer shrink-0"
                 onClick={() => setIsNicknameModalOpen(true)}
                 type="button"
                 title="프로필 및 레벨 수정"
               >
                 <span>🐾</span>
                 <span className="text-xs sm:text-sm font-bold text-gray-800 max-w-[70px] sm:max-w-[90px] truncate">{nickname}님</span>
-                <span className="text-[10px] sm:text-[11px] font-bold px-2 py-0.5 rounded-full bg-white text-orange-600 border border-orange-200/80 shadow-2xs whitespace-nowrap">
+                <span className="text-[10px] sm:text-[11px] font-bold px-2 py-0.5 rounded-full bg-white text-orange-600 border border-orange-200/80 shadow-2xs shrink-0 whitespace-nowrap">
                   {(userLevel || "A1").replace("-", "~")}
                 </span>
               </button>
@@ -811,32 +788,29 @@ function TalkyRoomContent() {
           </div>
         </header>
 
-        {/* Main Content */}
-        <main className="flex-1 flex flex-col relative w-full pt-16 pb-28 bg-[#faf8ff]">
-          <div className="flex flex-col w-full relative select-none gap-3 px-3">
+        {/* 토키룸 서브 헤더: 스크립트 타이틀 & 스크립트 버튼 (제목 온전 노출 및 '스크립트' 버튼) */}
+        <div className="w-full bg-orange-50/60 border-b border-orange-100/80 px-4 py-2 flex items-center justify-between gap-3 flex-shrink-0 mt-16">
+          {/* 좌측: 스크립트 제목 (넓은 공간 부여) */}
+          <div className="flex items-center gap-1.5 min-w-0 flex-1">
+            <span className="text-xs text-orange-600 font-bold shrink-0">📖 Script:</span>
+            <span className="text-xs sm:text-sm font-semibold text-gray-800 break-words line-clamp-1">
+              {script?.title || '스크립트 불러오는 중...'}
+            </span>
+          </div>
 
-            {/* Topic Bar */}
-            <div className="pt-1 pb-0.5 flex items-center justify-between gap-2">
-              <div className="flex items-center gap-2 min-w-0">
-                <span className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-[#fea619]/20 text-[#855300]">
-                  <span className="material-symbols-outlined text-[16px]">storefront</span>
-                </span>
-                <div className="min-w-0">
-                  <div className="flex items-center gap-1.5">
-                    <p className="font-headline-sm text-xs sm:text-sm text-[#131b2e] truncate font-bold">{script.title}</p>
-                    <span className="px-2 py-0.5 rounded-full bg-[#e2e7ff] text-[#004ac6] font-label-sm text-[10px] shrink-0 font-bold">
-                      {script.category}
-                    </span>
-                  </div>
-                  <p className="font-body-sm text-[10px] text-[#434655] truncate">
-                    {mode === "listen_all" && "전체듣기 모드 (핸즈프리)"}
-                    {mode === "shadowing" && "따라하기 훈련 모드"}
-                    {mode === "roleplay" && "롤플레이 턴제 대화 모드 (티키타카)"}
-                    {mode === "role_switch" && "역할교대 턴제 대화 모드 (반대 역할)"}
-                  </p>
-                </div>
-              </div>
-            </div>
+          {/* 우측: 스크립트 열기 버튼 */}
+          <button
+            onClick={() => router.push(`/talky-sheet?id=${script.id}`)}
+            className="inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs font-bold bg-white text-orange-600 border border-orange-200 shadow-2xs hover:bg-orange-50 active:scale-95 shrink-0 whitespace-nowrap cursor-pointer"
+            type="button"
+          >
+            <span>📄</span> 스크립트
+          </button>
+        </div>
+
+        {/* Main Content */}
+        <main className="flex-1 flex flex-col relative w-full pb-28 bg-[#faf8ff]">
+          <div className="flex flex-col w-full relative select-none gap-3 px-3 pt-2">
 
             {/* Central TalkyCat Avatar & Live Voice Aura Stage */}
             <div className="flex flex-col items-center justify-center py-1 relative">
@@ -986,6 +960,23 @@ function TalkyRoomContent() {
         {/* Fixed Bottom Control Deck & Action Buttons */}
         <div className="fixed bottom-0 w-full max-w-[480px] z-40 bg-[#faf8ff]/95 backdrop-blur-md border-t border-[#eaedff] p-3 flex flex-col gap-2 shadow-lg">
           
+          {/* 사운드 토글 미니 컨트롤 툴바 (하단 학습 모드 탭 바로 위 배치) */}
+          <div className="w-full flex items-center justify-between px-3 py-1.5 bg-[#f2f3ff]/90 rounded-xl border border-[#eaedff]">
+            <div className="flex items-center gap-1.5">
+              <span className="material-symbols-outlined text-[16px] text-[#004ac6]">volume_up</span>
+              <span className="text-[11px] font-bold text-gray-700">턴 전환 비프음 (1.2s)</span>
+            </div>
+            <button
+              onClick={() => setIsSoundEnabled(!isSoundEnabled)}
+              className={`px-2.5 py-0.5 rounded-full text-[11px] font-bold transition-all cursor-pointer ${
+                isSoundEnabled ? 'bg-[#004ac6] text-white' : 'bg-gray-200 text-gray-600'
+              }`}
+              type="button"
+            >
+              {isSoundEnabled ? '켜짐 🔊' : '꺼짐 🔇'}
+            </button>
+          </div>
+
           {/* Control Deck (3 buttons: 다시듣기, 마이크 제어, 종료) */}
           <div className="flex items-center justify-around w-full px-2">
             <div className="flex flex-col items-center">

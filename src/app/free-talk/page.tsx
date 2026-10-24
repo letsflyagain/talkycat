@@ -32,6 +32,33 @@ interface BookmarkedExpression {
   createdAt: string;
 }
 
+type TurnStatus = "SYSTEM_SPEAKING" | "PREPARING" | "USER_LISTENING" | "WAITING_START_TOUCH";
+
+// Sentence splitter helper for chunked TTS playback without GC cutoffs
+export function splitTextIntoSentences(text: string): string[] {
+  const matched = text.match(/[^.!?\n]+[.!?\n]+(\s|$)|[^.!?\n]+$/g);
+  return matched ? matched.map((s) => s.trim()).filter(Boolean) : [text];
+}
+
+// Browser voice loading helper with voiceschanged wait
+export const getValidVoice = (): Promise<SpeechSynthesisVoice | null> => {
+  return new Promise((resolve) => {
+    if (typeof window === "undefined" || !("speechSynthesis" in window)) {
+      return resolve(null);
+    }
+    let voices = window.speechSynthesis.getVoices();
+    if (voices.length > 0) {
+      const enVoice = voices.find((v) => v.lang.startsWith('en')) || voices[0];
+      return resolve(enVoice);
+    }
+    window.speechSynthesis.onvoiceschanged = () => {
+      voices = window.speechSynthesis.getVoices();
+      const enVoice = voices.find((v) => v.lang.startsWith('en')) || voices[0];
+      resolve(enVoice);
+    };
+  });
+};
+
 export default function FreeTalkPage() {
   const router = useRouter();
   const [nickname, setNickname] = useState("사용자");
@@ -41,7 +68,10 @@ export default function FreeTalkPage() {
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [anchorTopic, setAnchorTopic] = useState<string | null>(null);
-  const [isListening, setIsListening] = useState(false);
+
+  // Turn State Machine
+  const [turnStatus, setTurnStatus] = useState<TurnStatus>("SYSTEM_SPEAKING");
+
   const [recognizedText, setRecognizedText] = useState("");
   const [isThinking, setIsThinking] = useState(false);
   const [statusText, setStatusText] = useState("토키캣과 대화 준비 중 🐾");
@@ -59,9 +89,9 @@ export default function FreeTalkPage() {
   const [activeReviewIndex, setActiveReviewIndex] = useState(0);
   const [typedReviewText, setTypedReviewText] = useState("");
   const [isReviewPaused, setIsReviewPaused] = useState(false);
-  const [reviewSpeed, setReviewSpeed] = useState<number>(1.0); // 1.0 -> 1.2 -> 0.8
-  const [onlyFeedbackFilter, setOnlyFeedbackFilter] = useState(false);
+  const [reviewSpeed, setReviewSpeed] = useState<number>(1.0);
   const [isReviewFinished, setIsReviewFinished] = useState(false);
+  const [reviewRestartKey, setReviewRestartKey] = useState(0);
   const [bookmarkedMap, setBookmarkedMap] = useState<Record<string, boolean>>({});
   const [bookmarkedItems, setBookmarkedItems] = useState<BookmarkedExpression[]>([]);
   const [isExitConfirmOpen, setIsExitConfirmOpen] = useState(false);
@@ -72,13 +102,13 @@ export default function FreeTalkPage() {
   const silenceTimerRef = useRef<NodeJS.Timeout | null>(null);
   const watchdogTimerRef = useRef<NodeJS.Timeout | null>(null);
   const reviewTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const keepAliveTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const currentUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
   const latestTranscriptRef = useRef<string>("");
   const wakeLockRef = useRef<any>(null);
   const messagesRef = useRef<ChatMessage[]>([]);
   const anchorTopicRef = useRef<string | null>(null);
   const userLevelRef = useRef<UserLevel>("A1");
-  const isSpeakingRef = useRef<boolean>(false);
-  const [isSpeakingState, setIsSpeakingState] = useState(false);
   const reviewScrollRef = useRef<HTMLDivElement>(null);
 
   // Ironclad Guards against infinite loops and 429 quota exhaustion
@@ -185,6 +215,9 @@ export default function FreeTalkPage() {
       const AudioContextClass = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
       if (!AudioContextClass) return;
       const ctx = new AudioContextClass();
+      if (ctx.state === "suspended") {
+        ctx.resume();
+      }
       const buffer = ctx.createBuffer(1, 1, 22050);
       const source = ctx.createBufferSource();
       source.buffer = buffer;
@@ -228,30 +261,129 @@ export default function FreeTalkPage() {
       } catch {}
     }
     isRecognizingRef.current = false;
-    setIsListening(false);
   }, []);
 
-  const startListeningImmediate = useCallback(() => {
-    if (isSpeakingRef.current || isThinking) return;
-    if (isRecognizingRef.current) return;
-    if (recognitionRef.current) {
-      try {
-        recognitionRef.current.stop();
-        recognitionRef.current.abort();
-      } catch {}
-
-      try {
-        recognitionRef.current.start();
-        isRecognizingRef.current = true;
-        setIsListening(true);
-        setStatusText("말씀하세요 🎙️ (탭하여 음소거)");
-      } catch (e) {
-        console.warn("Recognition start error:", e);
-        isRecognizingRef.current = false;
-        setIsListening(false);
-      }
+  // Handle Speech Result with strict Self-Echo & Noise Guard
+  const handleSpeechResult = useCallback((transcript: string) => {
+    if (turnStatus === "SYSTEM_SPEAKING" || turnStatus === "WAITING_START_TOUCH") {
+      console.log("[셀프 에코 가드] 시스템 발화 중 또는 대기 중 인식된 입력 무시:", transcript);
+      return;
     }
-  }, [isThinking]);
+
+    const cleaned = transcript.trim();
+
+    if (!cleaned || cleaned.length < 3) {
+      return;
+    }
+
+    const lastMsg = messagesRef.current[messagesRef.current.length - 1];
+    if (lastMsg && lastMsg.role === 'assistant' && lastMsg.messageEn.toLowerCase().includes(cleaned.toLowerCase())) {
+      console.log('[셀프 에코 가드] 시스템 에코로 감지되어 입력을 무시합니다:', cleaned);
+      return;
+    }
+
+    teardownSTT();
+    sendUserMessageToAPI(cleaned);
+  }, [turnStatus, teardownSTT]);
+
+  // Safe STT Instance Factory Function
+  const initSpeechRecognition = useCallback(() => {
+    if (typeof window === 'undefined') return null;
+
+    const SpeechRecognitionAPI = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognitionAPI) return null;
+
+    const rec = new SpeechRecognitionAPI();
+    rec.lang = 'en-US';
+    rec.continuous = true;
+    rec.interimResults = true;
+    rec.maxAlternatives = 1;
+
+    rec.onstart = () => {
+      console.log('✅ 마이크 하드웨어 정상 활성화됨 (onstart)');
+      setTurnStatus('USER_LISTENING');
+      setStatusText("🎤 듣고 있다냥! 편하게 말씀해보라냥");
+      isRecognizingRef.current = true;
+    };
+
+    rec.onresult = (event: any) => {
+      if (turnStatus === "SYSTEM_SPEAKING" || turnStatus === "WAITING_START_TOUCH" || isThinking || isProcessingRef.current) return;
+      let interim = "";
+      let finalTranscript = "";
+
+      for (let i = event.resultIndex; i < event.results.length; ++i) {
+        const transcript = event.results[i][0].transcript;
+        if (event.results[i].isFinal) {
+          finalTranscript += transcript + " ";
+        } else {
+          interim += transcript;
+        }
+      }
+
+      const accumulated = (finalTranscript + interim).trim();
+      if (accumulated) {
+        latestTranscriptRef.current = accumulated;
+        setRecognizedText(accumulated);
+      }
+
+      if (silenceTimerRef.current) {
+        clearTimeout(silenceTimerRef.current);
+      }
+      silenceTimerRef.current = setTimeout(() => {
+        if (isRecognizingRef.current && latestTranscriptRef.current && turnStatus === "USER_LISTENING" && !isThinking && !isProcessingRef.current) {
+          handleSpeechResult(latestTranscriptRef.current);
+        }
+      }, 2800);
+
+      if (finalTranscript.trim() && turnStatus === "USER_LISTENING" && !isThinking && !isProcessingRef.current) {
+        handleSpeechResult(finalTranscript.trim());
+      }
+    };
+
+    rec.onerror = (event: any) => {
+      console.warn('STT 오류 발생:', event.error);
+      if (event.error === 'no-speech') {
+        setStatusText("다시 편하게 말해보라냥! 🐾");
+      }
+      if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+        setTurnStatus('PREPARING');
+      }
+      isRecognizingRef.current = false;
+    };
+
+    rec.onend = () => {
+      console.log('마이크 비활성화됨 (onend)');
+      isRecognizingRef.current = false;
+    };
+
+    recognitionRef.current = rec;
+    return rec;
+  }, [turnStatus, isThinking, handleSpeechResult]);
+
+  const startRealSpeechRecognition = useCallback(() => {
+    let rec = recognitionRef.current;
+    if (!rec) {
+      rec = initSpeechRecognition();
+    }
+    if (!rec) return;
+
+    try {
+      rec.start();
+    } catch (e: any) {
+      console.log('마이크 재시도 중...', e);
+      try {
+        rec.abort();
+        setTimeout(() => {
+          try {
+            rec?.start();
+            isRecognizingRef.current = true;
+          } catch (err) {
+            console.warn("마이크 재시도 실패:", err);
+          }
+        }, 150);
+      } catch (err) {}
+    }
+  }, [initSpeechRecognition]);
 
   const cleanTextForTTS = (text: string) => {
     return text
@@ -260,61 +392,183 @@ export default function FreeTalkPage() {
       .trim();
   };
 
-  const speakText = useCallback((text: string, rate: number = 1.0, onEnded?: () => void) => {
+  // Play System Turn with voice loading and chunked TTS playback
+  const speakChunk = (chunkText: string, rate: number, voice: SpeechSynthesisVoice | null): Promise<void> => {
+    return new Promise((resolve) => {
+      if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
+        return resolve();
+      }
+
+      const utterance = new SpeechSynthesisUtterance(chunkText);
+      utterance.lang = 'en-US';
+      if (voice) utterance.voice = voice;
+      utterance.rate = rate;
+      currentUtteranceRef.current = utterance; // GC 방어
+
+      utterance.onend = () => {
+        resolve();
+      };
+
+      utterance.onerror = (e) => {
+        console.warn('TTS 청크 에러 방어 처리:', e);
+        resolve();
+      };
+
+      window.speechSynthesis.speak(utterance);
+    });
+  };
+
+  const speakFullMessage = useCallback(async (fullText: string, rate: number): Promise<void> => {
+    const voice = await getValidVoice();
+    const cleaned = cleanTextForTTS(fullText);
+    const chunks = splitTextIntoSentences(cleaned);
+
+    if (keepAliveTimerRef.current) clearInterval(keepAliveTimerRef.current);
+    keepAliveTimerRef.current = setInterval(() => {
+      if (window.speechSynthesis.speaking && !window.speechSynthesis.paused) {
+        try {
+          window.speechSynthesis.pause();
+          window.speechSynthesis.resume();
+        } catch {}
+      }
+    }, 4000);
+
+    try {
+      for (const chunk of chunks) {
+        await speakChunk(chunk, rate, voice);
+      }
+    } finally {
+      if (keepAliveTimerRef.current) {
+        clearInterval(keepAliveTimerRef.current);
+        keepAliveTimerRef.current = null;
+      }
+      currentUtteranceRef.current = null;
+    }
+  }, []);
+
+  const playSystemTurn = useCallback(async (text: string, onEnded?: () => void) => {
     if (typeof window === "undefined" || !("speechSynthesis" in window)) {
-      isSpeakingRef.current = false;
-      setIsSpeakingState(false);
+      setTurnStatus("USER_LISTENING");
       if (onEnded) onEnded();
+      else startRealSpeechRecognition();
       return;
     }
 
-    teardownSTT();
+    setTurnStatus("SYSTEM_SPEAKING");
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.abort();
+      } catch {}
+    }
+    isRecognizingRef.current = false;
+    setStatusText("🔊 토키캣이 말하고 있다냥...");
+
     clearWatchdog();
     if (silenceTimerRef.current) {
       clearTimeout(silenceTimerRef.current);
       silenceTimerRef.current = null;
     }
     window.speechSynthesis.cancel();
-    isSpeakingRef.current = true;
-    setIsSpeakingState(true);
+    if (keepAliveTimerRef.current) {
+      clearInterval(keepAliveTimerRef.current);
+      keepAliveTimerRef.current = null;
+    }
 
-    const cleaned = cleanTextForTTS(text);
-    const utterance = new SpeechSynthesisUtterance(cleaned);
-    utterance.lang = "en-US";
-    utterance.rate = rate;
+    await speakFullMessage(text, 0.95);
 
-    const handleFinish = () => {
-      isSpeakingRef.current = false;
-      setIsSpeakingState(false);
+    let transitionFired = false;
+    const proceedToUserTurn = () => {
+      if (transitionFired) return;
+      transitionFired = true;
+
+      setTurnStatus("PREPARING");
+      setStatusText("⏳ 들을 준비 중이다냥...");
+
       setTimeout(() => {
         if (onEnded) {
           onEnded();
         } else {
-          startListeningImmediate();
+          startRealSpeechRecognition();
         }
       }, 800);
     };
 
-    utterance.onend = handleFinish;
-    utterance.onerror = handleFinish;
+    proceedToUserTurn();
+  }, [speakFullMessage, startRealSpeechRecognition]);
+
+  // Initial Greeting with Autoplay Policy Check & Voice Loading
+  const startInitialGreeting = async () => {
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+
+    const greetingText = "What kind of topic would you like to talk about?";
+    setMessages([{
+      id: Date.now().toString(),
+      role: 'assistant',
+      messageEn: greetingText,
+      messageKo: "어떤 주제로 대화해보고 싶냥? 🐾",
+      suggestedReplies: [
+        "I want to talk about my weekend plans.",
+        "Let's talk about my favorite food!"
+      ],
+      silentCorrection: null
+    }]);
+    setTurnStatus('SYSTEM_SPEAKING');
+    setStatusText("🔊 토키캣이 질문하고 있다냥...");
+
+    window.speechSynthesis.cancel();
+
+    let hasSpoken = false;
+    const autoplayCheckTimer = setTimeout(() => {
+      if (!hasSpoken) {
+        console.warn("첫 질문 자동재생이 브라우저에 의해 차단됨 (오토플레이 정책)");
+        setTurnStatus('WAITING_START_TOUCH');
+        setStatusText("🐾 터치하여 토키캣과 대화를 시작하세요!");
+      }
+    }, 1500);
+
+    const voice = await getValidVoice();
+    const utterance = new SpeechSynthesisUtterance(greetingText);
+    utterance.lang = 'en-US';
+    if (voice) utterance.voice = voice;
+    utterance.rate = 0.95;
+    currentUtteranceRef.current = utterance;
+
+    utterance.onstart = () => {
+      hasSpoken = true;
+      clearTimeout(autoplayCheckTimer);
+      console.log("첫 질문 음성 출력 시작됨");
+    };
+
+    utterance.onend = () => {
+      clearTimeout(autoplayCheckTimer);
+      currentUtteranceRef.current = null;
+      setTurnStatus('PREPARING');
+      setStatusText("⏳ 들을 준비 중이다냥...");
+      setTimeout(() => {
+        startRealSpeechRecognition();
+      }, 800);
+    };
+
+    utterance.onerror = (e) => {
+      clearTimeout(autoplayCheckTimer);
+      currentUtteranceRef.current = null;
+      console.warn("첫 질문 자동재생 에러:", e);
+      setTurnStatus('WAITING_START_TOUCH');
+      setStatusText("🐾 터치하여 토키캣과 대화를 시작하세요!");
+    };
 
     window.speechSynthesis.speak(utterance);
-  }, [teardownSTT, startListeningImmediate]);
+  };
 
-  const isValidSpeech = (text: string) => {
-    const cleaned = text.trim().toLowerCase();
-    if (cleaned.length < 4) return false;
-    if (['yeah', 'yes', 'no', 'ok', 'okay'].includes(cleaned)) return true;
-    return cleaned.split(/\s+/).length >= 1;
+  const handleStartTouch = () => {
+    kickstartAudioHardware();
+    startInitialGreeting();
   };
 
   const sendUserMessageToAPI = useCallback(async (text: string) => {
     const trimmed = (text || "").trim();
 
-    if (trimmed.length <= 1) {
-      console.log("[보안 가드] 발화 내용이 없어 전송을 차단합니다.");
-      return;
-    }
+    if (!trimmed || trimmed.length < 3) return;
 
     const now = Date.now();
     if (isProcessingRef.current || (now - lastCallTimeRef.current < 1500)) {
@@ -340,7 +594,7 @@ export default function FreeTalkPage() {
       isProcessingRef.current = false;
       setIsThinking(false);
       setStatusText("토키캣이 잠시 쉬고 있다냥. 다시 말해보세요! 🐾");
-      startListeningImmediate();
+      startRealSpeechRecognition();
     }, 8000);
 
     const userMsg: ChatMessage = {
@@ -379,7 +633,7 @@ export default function FreeTalkPage() {
         setIsThinking(false);
         setStatusText("요청이 너무 많다냥! 잠시 뒤 시도해줘 🐾");
         showToast("현재 대화 요청이 몰려 잠시 대기 중이다냥. 20초 뒤에 마이크를 눌러달라냥! 🐾");
-        startListeningImmediate();
+        startRealSpeechRecognition();
         return;
       }
 
@@ -404,12 +658,8 @@ export default function FreeTalkPage() {
         const finalMessages = [...updatedMessages, assistantMsg];
         setMessages(finalMessages);
         setIsThinking(false);
-        setStatusText("토키캣이 말하고 있어요냥! 🐱");
 
-        speakText(data.messageEn, 1.0, () => {
-          setStatusText("말씀하세요 🎙️ (탭하여 음소거)");
-          startListeningImmediate();
-        });
+        playSystemTurn(data.messageEn);
       } else {
         throw new Error("API failed");
       }
@@ -420,148 +670,50 @@ export default function FreeTalkPage() {
       setIsThinking(false);
       setStatusText("통신 중 오류가 발생했다냥. 다시 시도해줘! 🐾");
       showToast("응답을 불러오지 못했습니다.");
-      startListeningImmediate();
+      startRealSpeechRecognition();
     }
-  }, [speakText, teardownSTT, startListeningImmediate]);
+  }, [playSystemTurn, teardownSTT, startRealSpeechRecognition]);
 
-  // Initialize Speech Recognition
+  // Initialize Speech Recognition instance on mount
   useEffect(() => {
-    if (typeof window === "undefined") return;
-    const SpeechRecognitionAPI = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (SpeechRecognitionAPI) {
-      const recognition = new SpeechRecognitionAPI();
-      recognition.lang = "en-US";
-      recognition.interimResults = true;
-      recognition.maxAlternatives = 1;
+    initSpeechRecognition();
+  }, [initSpeechRecognition]);
 
-      recognition.onresult = (event: any) => {
-        if (isSpeakingRef.current || isThinking || isProcessingRef.current) return;
-        let interim = "";
-        let finalTranscript = "";
-
-        for (let i = event.resultIndex; i < event.results.length; ++i) {
-          const transcript = event.results[i][0].transcript;
-          if (event.results[i].isFinal) {
-            finalTranscript += transcript;
-          } else {
-            interim += transcript;
-          }
-        }
-
-        const currentTranscript = finalTranscript || interim || latestTranscriptRef.current;
-        latestTranscriptRef.current = currentTranscript;
-        setRecognizedText(currentTranscript);
-
-        if (silenceTimerRef.current) {
-          clearTimeout(silenceTimerRef.current);
-        }
-        silenceTimerRef.current = setTimeout(() => {
-          if (isRecognizingRef.current && currentTranscript && !isSpeakingRef.current && !isThinking && !isProcessingRef.current) {
-            if (isValidSpeech(currentTranscript)) {
-              sendUserMessageToAPI(currentTranscript);
-            } else {
-              console.log("[보안 가드] 노이즈 또는 무효한 짧은 발화로 판정되어 자동 전송을 무시합니다:", currentTranscript);
-            }
-          }
-        }, 2500);
-
-        if (finalTranscript && !isSpeakingRef.current && !isThinking && !isProcessingRef.current) {
-          if (isValidSpeech(finalTranscript)) {
-            sendUserMessageToAPI(finalTranscript);
-          } else {
-            console.log("[보안 가드] 노이즈 또는 무효한 최종 발화로 판정되어 자동 전송을 무시합니다:", finalTranscript);
-          }
-        }
-      };
-
-      recognition.onerror = (event: any) => {
-        console.warn("Speech recognition error", event.error);
-        if (event.error === "no-speech") {
-          setStatusText("다시 편하게 말해보라냥! 🐾");
-        }
-        isRecognizingRef.current = false;
-        setIsListening(false);
-      };
-
-      recognition.onend = () => {
-        isRecognizingRef.current = false;
-      };
-
-      recognitionRef.current = recognition;
-    }
-  }, [isListening, isThinking, sendUserMessageToAPI]);
-
-  // Initial Entry: Set fixed opening message and speak it (Strictly 1 time)
+  // Initial Entry
   useEffect(() => {
     if (hasInitializedRef.current) return;
     hasInitializedRef.current = true;
 
-    let isMounted = true;
+    if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      window.speechSynthesis.cancel();
+    }
+    if (recognitionRef.current) {
+      try { recognitionRef.current.abort(); } catch (e) {}
+    }
+    isRecognizingRef.current = false;
+
     kickstartAudioHardware();
-
-    const initConversation = async () => {
-      if (!isMounted) return;
-      const openingMsg: ChatMessage = {
-        id: Date.now().toString(),
-        role: "assistant",
-        messageEn: "What kind of topic would you like to talk about?",
-        messageKo: "어떤 주제로 대화해보고 싶냥? 🐾",
-        suggestedReplies: [
-          "I want to talk about my weekend plans.",
-          "Let's talk about my favorite food!"
-        ],
-        silentCorrection: null
-      };
-      setMessages([openingMsg]);
-      setAnchorTopic(null);
-      setStatusText("토키캣이 말하고 있어요냥! 🐱");
-      speakText("What kind of topic would you like to talk about?", 1.0, () => {
-        setStatusText("말씀하세요 🎙️ (탭하여 음소거)");
-        startListeningImmediate();
-      });
-    };
-
-    initConversation();
+    startInitialGreeting();
 
     return () => {
-      isMounted = false;
       clearWatchdog();
       teardownSTT();
       if (silenceTimerRef.current) {
         clearTimeout(silenceTimerRef.current);
         silenceTimerRef.current = null;
       }
+      if (keepAliveTimerRef.current) {
+        clearInterval(keepAliveTimerRef.current);
+        keepAliveTimerRef.current = null;
+      }
       if (typeof window !== "undefined" && "speechSynthesis" in window) {
         window.speechSynthesis.cancel();
       }
     };
-  }, [speakText, teardownSTT, startListeningImmediate]);
-
-  const handleMainMicClick = () => {
-    if (isThinking || isSpeakingState || isProcessingRef.current) return;
-
-    if (isListening && recognizedText.trim().length > 0) {
-      if (silenceTimerRef.current) {
-        clearTimeout(silenceTimerRef.current);
-        silenceTimerRef.current = null;
-      }
-      sendUserMessageToAPI(recognizedText);
-      return;
-    }
-
-    if (isListening) {
-      teardownSTT();
-      setStatusText("음성 인식이 일시중지되었습니다 🐾");
-      showToast("마이크가 일시정지되었습니다.");
-      return;
-    }
-
-    startListeningImmediate();
-    showToast("마이크가 켜졌습니다. 말씀해 보세요!");
-  };
+  }, []);
 
   const handleSuggestedClick = (reply: string) => {
-    if (isThinking || isSpeakingState || isProcessingRef.current) return;
+    if (isThinking || turnStatus === "SYSTEM_SPEAKING" || turnStatus === "WAITING_START_TOUCH" || isProcessingRef.current) return;
     sendUserMessageToAPI(reply);
   };
 
@@ -573,15 +725,15 @@ export default function FreeTalkPage() {
   const handleSlowReplay = () => {
     const latest = [...messages].reverse().find(m => m.role === "assistant");
     if (latest) {
-      speakText(latest.messageEn, 0.8, () => {
-        startListeningImmediate();
+      playSystemTurn(latest.messageEn, () => {
+        startRealSpeechRecognition();
       });
       showToast("0.8배속으로 또박또박 재생합니다 🐾");
     }
   };
 
   const handleSimpleExplanation = () => {
-    if (isThinking || isSpeakingState || isProcessingRef.current) return;
+    if (isThinking || turnStatus === "SYSTEM_SPEAKING" || turnStatus === "WAITING_START_TOUCH" || isProcessingRef.current) return;
     sendUserMessageToAPI("Could you explain this in much simpler English and simpler words, please?");
   };
 
@@ -597,6 +749,10 @@ export default function FreeTalkPage() {
     if (typeof window !== "undefined" && "speechSynthesis" in window) {
       window.speechSynthesis.cancel();
     }
+    if (keepAliveTimerRef.current) {
+      clearInterval(keepAliveTimerRef.current);
+      keepAliveTimerRef.current = null;
+    }
 
     setIsReviewModalOpen(true);
     setIsReviewLoading(true);
@@ -605,6 +761,7 @@ export default function FreeTalkPage() {
     setTypedReviewText("");
     setIsReviewPaused(false);
     setIsReviewFinished(false);
+    setReviewRestartKey((prev) => prev + 1);
 
     try {
       const res = await fetch("/api/freetalk/feedback", {
@@ -627,15 +784,32 @@ export default function FreeTalkPage() {
     }
   };
 
-  // Review Sequential Playback Effect
+  // Auto smooth scroll when review is finished
   useEffect(() => {
-    if (!isReviewModalOpen || isReviewLoading || isReviewFinished || isReviewPaused) return;
+    if (isReviewFinished && reviewScrollRef.current) {
+      setTimeout(() => {
+        reviewScrollRef.current?.scrollTo({
+          top: reviewScrollRef.current.scrollHeight,
+          behavior: 'smooth',
+        });
+      }, 150);
+    }
+  }, [isReviewFinished]);
 
-    const reviewItems = onlyFeedbackFilter
-      ? messages.filter((m) => m.role === "user" && feedbackList.some((f) => f.originalText === m.messageEn && f.hasError))
-      : messages;
+  // Review Sequential Playback Effect with 3-Button Toolbar & messages as 1:1 source
+  useEffect(() => {
+    if (!isReviewModalOpen || isReviewLoading || isReviewFinished || isReviewPaused) {
+      if (isReviewPaused && typeof window !== "undefined" && "speechSynthesis" in window) {
+        window.speechSynthesis.pause();
+      }
+      return;
+    }
 
-    if (activeReviewIndex >= reviewItems.length) {
+    if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      window.speechSynthesis.resume();
+    }
+
+    if (activeReviewIndex >= messages.length) {
       setIsReviewFinished(true);
       if (typeof window !== "undefined" && "speechSynthesis" in window) {
         window.speechSynthesis.cancel();
@@ -643,63 +817,95 @@ export default function FreeTalkPage() {
       return;
     }
 
-    const currentMsg = reviewItems[activeReviewIndex];
+    const currentMsg = messages[activeReviewIndex];
     if (!currentMsg) return;
 
     let isCancelled = false;
     const fullText = currentMsg.messageEn;
     setTypedReviewText("");
 
-    // Typing effect (25~35ms per char)
-    let charIdx = 0;
-    const typingInterval = setInterval(() => {
-      if (isCancelled || isReviewPaused) return;
-      if (charIdx <= fullText.length) {
-        setTypedReviewText(fullText.slice(0, charIdx));
+    // 1. Typing animation Promise
+    const typingPromise = new Promise<void>((resolve) => {
+      let charIdx = 0;
+      const fullLen = fullText.length;
+      const typingInterval = setInterval(() => {
+        if (isCancelled || isReviewPaused) {
+          clearInterval(typingInterval);
+          resolve();
+          return;
+        }
         charIdx++;
-      } else {
-        clearInterval(typingInterval);
-      }
-    }, Math.round(30 / reviewSpeed));
+        setTypedReviewText(fullText.slice(0, charIdx));
+        if (charIdx >= fullLen) {
+          clearInterval(typingInterval);
+          resolve();
+        }
+      }, Math.round(30 / reviewSpeed));
+    });
 
-    // TTS playback
-    if (typeof window !== "undefined" && "speechSynthesis" in window) {
-      window.speechSynthesis.cancel();
-      const utterance = new SpeechSynthesisUtterance(cleanTextForTTS(fullText));
-      utterance.lang = "en-US";
-      utterance.rate = reviewSpeed;
-      window.speechSynthesis.speak(utterance);
-    }
+    // 2. Speech full message Promise with chunking & GC defense
+    const speechPromise = speakFullMessage(fullText, reviewSpeed);
 
     // Auto scroll review container
     if (reviewScrollRef.current) {
       reviewScrollRef.current.scrollTop = reviewScrollRef.current.scrollHeight;
     }
 
-    // Determine pause duration after item finishes
-    const pauseDuration = currentMsg.role === "user" ? 1200 : 600;
-    const estimatedTypingDuration = Math.max(1500, fullText.length * 35 / reviewSpeed);
-
-    clearReviewTimer();
-    reviewTimerRef.current = setTimeout(() => {
+    Promise.all([typingPromise, speechPromise]).then(() => {
       if (isCancelled || isReviewPaused) return;
-      setActiveReviewIndex((prev) => prev + 1);
-    }, estimatedTypingDuration + pauseDuration);
+
+      const waitDelay = currentMsg.role === "user" ? 1200 : 600;
+      clearReviewTimer();
+      reviewTimerRef.current = setTimeout(() => {
+        if (isCancelled || isReviewPaused) return;
+        setActiveReviewIndex((prev) => prev + 1);
+      }, waitDelay);
+    });
 
     return () => {
       isCancelled = true;
-      clearInterval(typingInterval);
       clearReviewTimer();
+      if (typeof window !== "undefined" && "speechSynthesis" in window) {
+        window.speechSynthesis.cancel();
+      }
+      if (keepAliveTimerRef.current) {
+        clearInterval(keepAliveTimerRef.current);
+        keepAliveTimerRef.current = null;
+      }
+      currentUtteranceRef.current = null;
     };
-  }, [isReviewModalOpen, isReviewLoading, activeReviewIndex, isReviewPaused, onlyFeedbackFilter, messages, feedbackList, reviewSpeed]);
+  }, [isReviewModalOpen, isReviewLoading, activeReviewIndex, isReviewPaused, messages, feedbackList, reviewSpeed, speakFullMessage, reviewRestartKey]);
 
   const handleSkipReview = () => {
     clearReviewTimer();
     if (typeof window !== "undefined" && "speechSynthesis" in window) {
       window.speechSynthesis.cancel();
     }
-    setActiveReviewIndex(messages.length);
+    if (keepAliveTimerRef.current) {
+      clearInterval(keepAliveTimerRef.current);
+      keepAliveTimerRef.current = null;
+    }
+    currentUtteranceRef.current = null;
+    setIsReviewPaused(false);
+    setActiveReviewIndex(Math.max(0, messages.length - 1));
     setIsReviewFinished(true);
+  };
+
+  const handleRestartReview = () => {
+    clearReviewTimer();
+    if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      window.speechSynthesis.cancel();
+    }
+    if (keepAliveTimerRef.current) {
+      clearInterval(keepAliveTimerRef.current);
+      keepAliveTimerRef.current = null;
+    }
+    currentUtteranceRef.current = null;
+    setIsReviewPaused(false);
+    setIsReviewFinished(false);
+    setActiveReviewIndex(0);
+    setTypedReviewText("");
+    setReviewRestartKey((prev) => prev + 1);
   };
 
   const handleCloseReviewModal = () => {
@@ -707,10 +913,14 @@ export default function FreeTalkPage() {
     if (typeof window !== "undefined" && "speechSynthesis" in window) {
       window.speechSynthesis.cancel();
     }
+    if (keepAliveTimerRef.current) {
+      clearInterval(keepAliveTimerRef.current);
+      keepAliveTimerRef.current = null;
+    }
+    currentUtteranceRef.current = null;
     setIsReviewModalOpen(false);
   };
 
-  // Toggle Bookmark for Expression
   const handleToggleBookmark = (expression: string, meaning: string, originalContext: string) => {
     try {
       const exists = bookmarkedMap[expression];
@@ -756,18 +966,22 @@ export default function FreeTalkPage() {
     if (typeof window !== "undefined" && "speechSynthesis" in window) {
       window.speechSynthesis.cancel();
     }
-    isSpeakingRef.current = false;
-    setIsSpeakingState(false);
+    if (keepAliveTimerRef.current) {
+      clearInterval(keepAliveTimerRef.current);
+      keepAliveTimerRef.current = null;
+    }
+    currentUtteranceRef.current = null;
     setRecognizedText("");
     latestTranscriptRef.current = "";
     setAnchorTopic(null);
 
     showToast("대화를 처음부터 다시 시작한다냥! 🐾");
 
+    const initialGreeting = "What kind of topic would you like to talk about?";
     const openingMsg: ChatMessage = {
       id: Date.now().toString(),
       role: "assistant",
-      messageEn: "What kind of topic would you like to talk about?",
+      messageEn: initialGreeting,
       messageKo: "어떤 주제로 대화해보고 싶냥? 🐾",
       suggestedReplies: [
         "I want to talk about my weekend plans.",
@@ -776,11 +990,7 @@ export default function FreeTalkPage() {
       silentCorrection: null
     };
     setMessages([openingMsg]);
-    setStatusText("토키캣이 말하고 있어요냥! 🐱");
-    speakText("What kind of topic would you like to talk about?", 1.0, () => {
-      setStatusText("말씀하세요 🎙️ (탭하여 음소거)");
-      startListeningImmediate();
-    });
+    playSystemTurn(initialGreeting);
   };
 
   const handleBackClick = () => {
@@ -801,47 +1011,17 @@ export default function FreeTalkPage() {
       clearTimeout(silenceTimerRef.current);
       silenceTimerRef.current = null;
     }
+    if (keepAliveTimerRef.current) {
+      clearInterval(keepAliveTimerRef.current);
+      keepAliveTimerRef.current = null;
+    }
     if (typeof window !== "undefined" && "speechSynthesis" in window) window.speechSynthesis.cancel();
+    currentUtteranceRef.current = null;
     router.replace("/");
   };
 
   const latestAssistantMsg = [...messages].reverse().find(m => m.role === "assistant");
   const currentSuggestedReplies = latestAssistantMsg?.suggestedReplies || [];
-
-  const getMicButtonState = () => {
-    if (isThinking || isSpeakingState || isProcessingRef.current) {
-      return {
-        icon: "progress_activity",
-        isSpinning: true,
-        bgStyle: "bg-[#004ac6] opacity-60 cursor-not-allowed shadow-none",
-        label: "토키캣 말하는 중... 🐾"
-      };
-    }
-    if (isListening && recognizedText.trim().length > 0) {
-      return {
-        icon: "send",
-        isSpinning: false,
-        bgStyle: "bg-emerald-600 animate-pulse shadow-lg shadow-emerald-600/30",
-        label: "탭하여 바로 전송 🚀"
-      };
-    }
-    if (isListening) {
-      return {
-        icon: "mic",
-        isSpinning: false,
-        bgStyle: "bg-emerald-600 animate-pulse shadow-md shadow-emerald-600/30",
-        label: "말씀하세요 🎙️ (탭하여 음소거)"
-      };
-    }
-    return {
-      icon: "mic_off",
-      isSpinning: false,
-      bgStyle: "bg-slate-200 text-slate-600 shadow-sm hover:bg-slate-300",
-      label: "탭하여 말하기 🎤"
-    };
-  };
-
-  const micState = getMicButtonState();
 
   return (
     <div className="min-h-[100dvh] bg-[#faf8ff] text-[#131b2e] flex flex-col items-center justify-start relative select-none">
@@ -855,57 +1035,66 @@ export default function FreeTalkPage() {
         <span className="font-label-sm text-xs">{toastMessage}</span>
       </div>
 
+      {/* WAITING_START_TOUCH Fallback Overlay when Autoplay is blocked */}
+      {turnStatus === 'WAITING_START_TOUCH' && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in">
+          <div className="w-full max-w-[360px] bg-white rounded-3xl p-6 shadow-2xl flex flex-col items-center text-center gap-4 animate-in zoom-in-95">
+            <div className="w-20 h-20 rounded-full bg-orange-100 text-orange-600 flex items-center justify-center text-4xl shadow-inner animate-bounce">
+              🐾
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <h3 className="font-headline-md text-lg font-bold text-[#131b2e]">
+                토키캣 목소리를 듣고 대화를 시작하려면 터치하라냥! 🐾
+              </h3>
+              <p className="font-body-sm text-xs text-[#737686]">
+                브라우저 정책으로 인해 화면을 한 번 터치하면 고양이 목소리와 함께 대화가 시작됩니다.
+              </p>
+            </div>
+            <button
+              className="w-full py-3.5 rounded-2xl bg-orange-500 hover:bg-orange-600 text-white font-label-md text-sm font-bold shadow-lg transition-all active:scale-95 cursor-pointer flex items-center justify-center gap-2"
+              onClick={handleStartTouch}
+              type="button"
+            >
+              <span>🔊</span>
+              <span>토키캣과 대화 시작하기 (화면 터치 🐾)</span>
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* TalkyRoom Style Mobile View Container */}
       <div className="w-full max-w-[480px] h-[100dvh] bg-white relative shadow-xl border-x border-[#eaedff]/60 flex flex-col justify-between overflow-hidden">
 
-        {/* 1. Top Header */}
+        {/* 1. Top Header (Korean header title "프리토킹") */}
         <header className="w-full z-40 pt-safe bg-[#faf8ff]/90 backdrop-blur-md border-b border-[#eaedff] flex-shrink-0">
           <div className="h-14 px-4 flex items-center justify-between">
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 min-w-0">
               <button
-                className="w-9 h-9 rounded-full bg-[#eaedff] hover:bg-[#e2e7ff] text-[#131b2e] flex items-center justify-center transition-colors cursor-pointer active:scale-95"
+                className="w-9 h-9 rounded-full bg-[#eaedff] hover:bg-[#e2e7ff] text-[#131b2e] flex items-center justify-center transition-colors cursor-pointer active:scale-95 shrink-0"
                 onClick={handleBackClick}
                 type="button"
                 aria-label="메인으로 돌아가기"
               >
                 <span className="material-symbols-outlined text-[18px]">arrow_back</span>
               </button>
-              <div className="w-7 h-7 rounded-full overflow-hidden bg-[#dbe1ff] flex items-center justify-center">
+              <div className="w-7 h-7 rounded-full overflow-hidden bg-[#dbe1ff] flex items-center justify-center shrink-0">
                 <Image src="/talkycat-s.png" alt="TalkyCat" width={28} height={28} className="w-full h-full object-cover" />
               </div>
-              <h1 className="font-headline-sm text-sm font-bold text-[#131b2e] truncate max-w-[100px]">
-                FreeTalk
+              <h1 className="font-headline-sm text-sm font-bold text-[#131b2e] truncate whitespace-nowrap min-w-0">
+                프리토킹
               </h1>
             </div>
 
-            <div className="flex items-center gap-1.5">
+            <div className="flex items-center gap-1.5 shrink-0">
               <button
-                className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#004ac6] text-white font-label-sm text-xs shadow-sm transition-all active:scale-95 cursor-pointer hover:bg-[#2563eb]"
-                onClick={handleOpenReview}
-                type="button"
-                aria-label="대화 복습하기"
-              >
-                <span className="material-symbols-outlined text-[15px]">headphones</span>
-                <span>대화 복습 🎧</span>
-              </button>
-              <button
-                className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#f2f3ff] hover:bg-[#e2e7ff] text-[#004ac6] font-label-sm text-xs shadow-sm transition-all active:scale-95 cursor-pointer"
-                onClick={() => setIsHistoryModalOpen(true)}
-                type="button"
-                aria-label="대화 기록 보기"
-              >
-                <span className="material-symbols-outlined text-[15px]">history</span>
-                <span>기록</span>
-              </button>
-              <button
-                className="flex items-center gap-1 p-1 rounded-full bg-orange-50/60 border border-orange-100 shadow-xs hover:bg-orange-100/60 transition cursor-pointer"
+                className="flex items-center gap-1.5 p-1 rounded-full bg-orange-50/65 border border-orange-100 shadow-xs hover:bg-orange-100/70 transition cursor-pointer shrink-0"
                 onClick={() => setIsNicknameModalOpen(true)}
                 type="button"
                 title="프로필 및 레벨 수정"
               >
                 <span>🐾</span>
-                <span className="text-xs font-bold text-gray-800 max-w-[60px] truncate">{nickname}님</span>
-                <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-white text-orange-600 border border-orange-200/80">
+                <span className="text-xs font-bold text-gray-800 max-w-[65px] truncate">{nickname}님</span>
+                <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-white text-orange-600 border border-orange-200/80 shrink-0 whitespace-nowrap">
                   {(userLevel || "A1").replace("-", "~")}
                 </span>
               </button>
@@ -913,37 +1102,59 @@ export default function FreeTalkPage() {
           </div>
         </header>
 
-        {/* 2. Central Single Focus Card Area with Compact Spacing */}
+        {/* 헤더 바로 밑 서브 프레임 (2단 분리 구조: 토픽 라인 + 3버튼 카드형 탭 바) */}
+        <div className="w-full border-b border-orange-100/80 bg-white flex-shrink-0">
+          <div className="w-full bg-orange-50/70 px-4 py-2 border-b border-orange-100/60 flex items-center gap-2 min-w-0">
+            <span className="text-xs text-orange-600 font-bold shrink-0">📌 Topic:</span>
+            <span className="text-xs sm:text-sm font-semibold text-gray-800 truncate min-w-0">
+              {anchorTopic || '대화 탐색 중...'}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-3 gap-2 px-4 py-2 bg-white">
+            <button
+              onClick={handleOpenReview}
+              disabled={messages.length <= 1}
+              className={`flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-xl text-xs font-bold transition-all border ${
+                messages.length > 1
+                  ? 'bg-orange-500 text-white border-orange-500 shadow-xs hover:bg-orange-600 active:scale-95 cursor-pointer'
+                  : 'bg-gray-50 text-gray-300 border-gray-200 cursor-not-allowed'
+              }`}
+              type="button"
+            >
+              <span>🎧</span>
+              <span>대화 복습</span>
+            </button>
+
+            <button
+              onClick={() => setIsHistoryModalOpen(true)}
+              className="flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-xl text-xs font-semibold text-gray-700 bg-gray-50 border border-gray-200 shadow-2xs hover:bg-gray-100 active:scale-95 transition-all cursor-pointer"
+              type="button"
+            >
+              <span>📜</span>
+              <span>대화 기록</span>
+            </button>
+
+            <button
+              onClick={handleResetConversationClick}
+              className="flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-xl text-xs font-semibold text-gray-600 bg-gray-50 border border-gray-200 hover:bg-gray-100 active:scale-95 transition-all cursor-pointer"
+              type="button"
+            >
+              <span>🔄</span>
+              <span>대화 리셋</span>
+            </button>
+          </div>
+        </div>
+
+        {/* 2. Central Single Focus Card Area */}
         <main className="flex-1 flex flex-col items-center justify-center px-4 py-1.5 relative overflow-y-auto bg-gradient-to-b from-[#dbe1ff]/15 via-white to-[#f2f3ff]/35 pb-40">
-          {/* Status Pill */}
           <div className="mb-1.5 flex items-center gap-1 px-3 py-1 rounded-full bg-white shadow-md border border-[#eaedff]">
             <span className="material-symbols-outlined text-[#004ac6] text-[15px] animate-bounce">graphic_eq</span>
             <span className="font-label-sm text-xs text-[#004ac6] font-bold">{statusText}</span>
           </div>
 
-          {/* Top Topic Banner with Reset Button */}
-          <div className="w-full max-w-md bg-white/90 backdrop-blur-md border border-amber-200/85 rounded-xl px-3.5 py-2 shadow-xs mx-4 mb-2 flex items-center justify-between">
-            <div className="flex items-center gap-1.5 min-w-0 pr-2">
-              <span className="text-xs">📌</span>
-              <div className="flex flex-col min-w-0">
-                <span className="text-[10px] text-[#737686] font-bold">대화 주제 (Anchor Topic)</span>
-                <span className="text-[#004ac6] font-bold text-xs truncate max-w-[170px]">
-                  {anchorTopic ? `Topic: ${anchorTopic}` : "주제 탐색 중... 🐾"}
-                </span>
-              </div>
-            </div>
-            <button
-              className="bg-amber-100 hover:bg-amber-200 text-amber-800 text-[11px] font-bold px-2.5 py-1 rounded-full shadow-xs active:scale-95 transition-all cursor-pointer flex items-center gap-1 flex-shrink-0"
-              onClick={handleResetConversationClick}
-              type="button"
-            >
-              <span>🔄 대화 리셋</span>
-            </button>
-          </div>
-
-          {/* Character Avatar with Pulsing Aura Rings (Compact) */}
           <div className="relative flex items-center justify-center w-28 h-28 sm:w-36 sm:h-36 mb-2">
-            <div className={`absolute inset-0 rounded-full bg-[#2563eb]/20 animate-ping ${isThinking || isSpeakingState ? "opacity-90" : "opacity-40"}`}></div>
+            <div className={`absolute inset-0 rounded-full bg-[#2563eb]/20 animate-ping ${isThinking || turnStatus === "SYSTEM_SPEAKING" ? "opacity-90" : "opacity-40"}`}></div>
             <div className="absolute -inset-1.5 rounded-full bg-[#004ac6]/10 animate-pulse"></div>
             <div className="relative w-24 h-24 sm:w-32 sm:h-32 rounded-full overflow-hidden shadow-lg bg-white p-1.5 flex items-center justify-center border-2 border-[#dbe1ff]">
               <Image
@@ -957,17 +1168,15 @@ export default function FreeTalkPage() {
             </div>
           </div>
 
-          {/* Central Focus Card (Compact Padding) */}
           <div className="w-full max-w-md bg-white rounded-2xl p-4 shadow-md border border-[#eaedff] flex flex-col gap-2.5 relative transition-all duration-300">
-            {/* Speaker Badge */}
             <div className="flex items-center justify-between">
-              <span className={`px-2 py-0.5 rounded-full font-label-sm text-[11px] font-bold ${isListening ? "bg-emerald-100 text-emerald-800" : "bg-[#dbe1ff] text-[#00174b]"}`}>
-                {isListening ? "나 🎤 (마이크 켜짐)" : "토키캣 🐾"}
+              <span className={`px-2 py-0.5 rounded-full font-label-sm text-[11px] font-bold ${turnStatus === "USER_LISTENING" ? "bg-emerald-100 text-emerald-800" : "bg-[#dbe1ff] text-[#00174b]"}`}>
+                {turnStatus === "USER_LISTENING" ? "나 🎤 (마이크 켜짐)" : "토키캣 🐾"}
               </span>
               <button
                 className="w-7 h-7 rounded-full bg-[#f2f3ff] hover:bg-[#e2e7ff] text-[#004ac6] flex items-center justify-center transition-colors cursor-pointer active:scale-95 shadow-xs"
                 onClick={() => {
-                  if (latestAssistantMsg) speakText(latestAssistantMsg.messageEn, 1.0, () => startListeningImmediate());
+                  if (latestAssistantMsg) playSystemTurn(latestAssistantMsg.messageEn, () => startRealSpeechRecognition());
                 }}
                 title="다시 듣기"
                 type="button"
@@ -976,19 +1185,16 @@ export default function FreeTalkPage() {
               </button>
             </div>
 
-            {/* English Utterance */}
             <p className="font-headline-sm text-base sm:text-lg font-bold text-[#131b2e] leading-snug text-center">
               {isThinking ? "Thinking of a warm reply..." : latestAssistantMsg ? latestAssistantMsg.messageEn : "Loading..."}
             </p>
 
-            {/* Korean Translation */}
             {showKorean && (
               <p className="font-body-sm text-[11px] text-[#434655] text-center border-t border-[#eaedff]/60 pt-1.5">
                 {isThinking ? "토키캣이 답변을 준비 중입니다." : latestAssistantMsg ? latestAssistantMsg.messageKo : ""}
               </p>
             )}
 
-            {/* Silent Correction Chip if available */}
             {latestAssistantMsg?.silentCorrection && (
               <button
                 className="self-center mt-0.5 flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-amber-50 border border-amber-200 text-amber-700 hover:bg-amber-100 transition-all text-[11px] font-semibold shadow-xs cursor-pointer"
@@ -1001,14 +1207,13 @@ export default function FreeTalkPage() {
             )}
           </div>
 
-          {/* Real-time STT Live Feedback or Thinking Indicator */}
           <div className="mt-2.5 w-full max-w-md flex flex-col items-center">
             {isThinking ? (
               <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#004ac6]/10 text-[#004ac6] text-xs font-semibold animate-pulse">
                 <span className="material-symbols-outlined text-[15px] animate-spin">progress_activity</span>
                 <span>토키캣이 생각 중이다냥... 🐾</span>
               </div>
-            ) : isListening && recognizedText ? (
+            ) : turnStatus === "USER_LISTENING" && recognizedText ? (
               <div className="w-full bg-[#004ac6]/10 border border-[#004ac6]/30 text-[#004ac6] rounded-xl px-3.5 py-2 text-center text-xs font-medium shadow-xs animate-fade-in">
                 &ldquo;{recognizedText}&rdquo; <span className="text-[10px] opacity-75">(인식 중...)</span>
               </div>
@@ -1016,10 +1221,9 @@ export default function FreeTalkPage() {
           </div>
         </main>
 
-        {/* 3. Unified Bottom Footer with Safe Area Inset and 2-Tier Deck */}
+        {/* 3. Unified Bottom Footer with Safe Area Inset and Turn State Machine UI */}
         <footer className="absolute bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-md border-t border-[#eaedff] shadow-[0_-4px_20px_rgba(0,0,0,0.06)] px-3 pt-2 pb-[max(1rem,env(safe-area-inset-bottom))] flex flex-col gap-2 max-w-[480px] mx-auto flex-shrink-0">
-          {/* Suggested Replies Chips */}
-          {currentSuggestedReplies.length > 0 && !isThinking && !isSpeakingState && (
+          {currentSuggestedReplies.length > 0 && !isThinking && turnStatus === "USER_LISTENING" && (
             <div className="flex flex-wrap justify-center gap-1 w-full">
               {currentSuggestedReplies.map((reply, idx) => (
                 <button
@@ -1034,7 +1238,6 @@ export default function FreeTalkPage() {
             </div>
           )}
 
-          {/* Auxiliary Quick Buttons Row */}
           <div className="w-full max-w-[480px] mx-auto grid grid-cols-3 gap-1.5">
             <button
               className="h-9 px-2 rounded-xl bg-white border border-[#c3c6d7]/60 shadow-xs flex items-center justify-center gap-1 text-[#131b2e] hover:bg-[#f2f3ff] active:scale-95 transition-all cursor-pointer"
@@ -1062,13 +1265,12 @@ export default function FreeTalkPage() {
             </button>
           </div>
 
-          {/* Main Control Deck */}
           <div className="w-full max-w-[480px] mx-auto flex items-center justify-around px-4 py-2 rounded-2xl bg-[#f2f3ff]/80 border border-[#eaedff] shadow-xs">
             <div className="flex flex-col items-center">
               <button
                 className="w-11 h-11 rounded-full bg-white text-[#004ac6] flex items-center justify-center hover:bg-[#e2e7ff] active:scale-90 transition shadow-xs cursor-pointer"
                 onClick={() => {
-                  if (latestAssistantMsg) speakText(latestAssistantMsg.messageEn, 1.0, () => startListeningImmediate());
+                  if (latestAssistantMsg) playSystemTurn(latestAssistantMsg.messageEn, () => startRealSpeechRecognition());
                 }}
                 type="button"
                 aria-label="다시듣기"
@@ -1078,21 +1280,46 @@ export default function FreeTalkPage() {
               <span className="font-label-sm text-[10px] text-[#434655] mt-0.5 font-bold">다시듣기</span>
             </div>
 
-            {/* Center Microphone Button */}
             <div className="flex flex-col items-center">
               <button
-                className={`w-14 h-14 rounded-full text-white flex items-center justify-center active:scale-95 transition-transform cursor-pointer ${micState.bgStyle}`}
-                onClick={handleMainMicClick}
+                disabled={turnStatus === "SYSTEM_SPEAKING" || turnStatus === "WAITING_START_TOUCH"}
+                onClick={() => {
+                  if (turnStatus === "WAITING_START_TOUCH") {
+                    handleStartTouch();
+                    return;
+                  }
+                  if (turnStatus !== "SYSTEM_SPEAKING") {
+                    if (turnStatus === "USER_LISTENING" && recognizedText.trim().length > 0) {
+                      if (silenceTimerRef.current) {
+                        clearTimeout(silenceTimerRef.current);
+                        silenceTimerRef.current = null;
+                      }
+                      handleSpeechResult(recognizedText);
+                    } else {
+                      startRealSpeechRecognition();
+                      showToast("마이크가 켜졌습니다. 말씀해 보세요!");
+                    }
+                  }
+                }}
+                className={`w-14 h-14 rounded-full text-white flex items-center justify-center active:scale-95 transition-all duration-300 shadow-md ${
+                  turnStatus === "USER_LISTENING"
+                    ? 'bg-emerald-500 hover:bg-emerald-600 text-white shadow-lg ring-4 ring-emerald-200 animate-pulse cursor-pointer'
+                    : turnStatus === "PREPARING"
+                    ? 'bg-orange-400 text-white opacity-90 cursor-pointer'
+                    : 'bg-gray-200 text-gray-400 cursor-not-allowed shadow-none'
+                }`}
                 type="button"
                 aria-label="마이크 제어 및 전송"
-                disabled={isThinking || isSpeakingState}
               >
-                <span className={`material-symbols-outlined text-[26px] ${micState.isSpinning ? "animate-spin" : ""}`}>
-                  {micState.icon}
+                <span className={`material-symbols-outlined text-[26px] ${turnStatus === "SYSTEM_SPEAKING" ? "animate-spin" : ""}`}>
+                  {turnStatus === "USER_LISTENING" && recognizedText.trim().length > 0 ? "send" : "mic"}
                 </span>
               </button>
               <span className="font-label-sm text-[10px] text-[#004ac6] font-semibold mt-0.5 whitespace-nowrap">
-                {micState.label}
+                {turnStatus === 'SYSTEM_SPEAKING' && "🔊 토키캣이 말하고 있다냥..."}
+                {turnStatus === 'PREPARING' && "⏳ 들을 준비 중이다냥..."}
+                {turnStatus === 'WAITING_START_TOUCH' && "🐾 터치하여 대화 시작"}
+                {turnStatus === 'USER_LISTENING' && (recognizedText.trim().length > 0 ? "🎤 보내기 (터치)" : "🎤 듣고 있다냥! (말씀하세요)")}
               </span>
             </div>
 
@@ -1112,254 +1339,227 @@ export default function FreeTalkPage() {
 
       </div>
 
-      {/* 🎧 REVIEW & BOOKMARK MODAL (Fullscreen Overlay) */}
+      {/* 🎧 REVIEW & BOOKMARK MODAL (Optimized UI/UX with Bottom Sticky Dock) */}
       {isReviewModalOpen && (
-        <div className="fixed inset-0 z-50 bg-white flex flex-col animate-in fade-in select-none">
-          {/* Review Header */}
-          <header className="h-14 px-4 border-b border-[#eaedff] bg-white flex items-center justify-between flex-shrink-0">
-            <div className="flex items-center gap-2">
-              <span className="text-xl">🎧</span>
-              <h2 className="font-headline-md text-sm font-bold text-[#131b2e]">대화 복습하기 🐾</h2>
-            </div>
-            <div className="flex items-center gap-1.5">
-              {/* Pause / Resume */}
+        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-0 sm:p-2">
+          <div className="w-full max-w-[480px] h-[100dvh] sm:h-[92vh] sm:rounded-3xl bg-white flex flex-col animate-in fade-in select-none shadow-2xl overflow-hidden relative">
+            
+            {/* 1단: 모달 메인 헤더 */}
+            <div className="h-13 px-4 flex items-center justify-between border-b border-gray-100 bg-white shrink-0">
+              <div className="flex items-center gap-2">
+                <span className="text-base font-bold text-gray-900">대화 복습하기 🐾</span>
+              </div>
               <button
-                className="px-2.5 py-1 rounded-full bg-[#f2f3ff] text-[#004ac6] font-label-sm text-xs font-bold hover:bg-[#e2e7ff] transition cursor-pointer active:scale-95"
-                onClick={() => setIsReviewPaused(!isReviewPaused)}
+                onClick={handleCloseReviewModal}
+                className="p-1.5 text-gray-400 hover:text-gray-600 rounded-full hover:bg-gray-100 active:scale-95 transition-all cursor-pointer"
+                aria-label="닫기"
                 type="button"
               >
-                {isReviewPaused ? "재생 ▶️" : "일시정지 ⏸️"}
+                <span className="text-xl leading-none">✕</span>
               </button>
-              {/* Speed cycling */}
+            </div>
+
+            {/* 2단: 3개 컨트롤 버튼 전용 툴바 (균등 3열 그리드) */}
+            <div className="px-3 py-2 bg-orange-50/50 border-b border-orange-100/70 grid grid-cols-3 gap-2 shrink-0">
+              {/* 1. 일시정지 / 재생 토글 */}
               <button
-                className="px-2.5 py-1 rounded-full bg-[#f2f3ff] text-[#004ac6] font-label-sm text-xs font-bold hover:bg-[#e2e7ff] transition cursor-pointer active:scale-95"
+                onClick={() => setIsReviewPaused(!isReviewPaused)}
+                className="py-1.5 px-1 rounded-lg bg-white border border-gray-200 text-gray-700 text-[11px] font-semibold flex items-center justify-center gap-1 shadow-2xs active:scale-95 whitespace-nowrap cursor-pointer"
+                type="button"
+              >
+                <span>{isReviewPaused ? '▶' : '⏸'}</span>
+                <span>{isReviewPaused ? '재생' : '일시정지'}</span>
+              </button>
+
+              {/* 2. 배속 조절 (1.0x -> 1.2x -> 0.8x) */}
+              <button
                 onClick={() => {
                   if (reviewSpeed === 1.0) setReviewSpeed(1.2);
                   else if (reviewSpeed === 1.2) setReviewSpeed(0.8);
                   else setReviewSpeed(1.0);
                 }}
+                className="py-1.5 px-1 rounded-lg bg-white border border-gray-200 text-gray-700 text-[11px] font-semibold flex items-center justify-center gap-1 shadow-2xs active:scale-95 whitespace-nowrap cursor-pointer"
                 type="button"
                 title="배속 조절"
               >
-                {reviewSpeed === 1.0 ? "1.0x" : reviewSpeed === 1.2 ? "1.2x" : "0.8x"}
+                <span>⚡</span>
+                <span>{reviewSpeed}x 배속</span>
               </button>
-              {/* Only Feedback Filter */}
+
+              {/* 3. 전체보기 (스킵) */}
               <button
-                className={`px-2.5 py-1 rounded-full font-label-sm text-xs font-bold transition cursor-pointer active:scale-95 ${
-                  onlyFeedbackFilter ? "bg-[#004ac6] text-white" : "bg-[#f2f3ff] text-[#434655] hover:bg-[#e2e7ff]"
-                }`}
-                onClick={() => {
-                  setOnlyFeedbackFilter(!onlyFeedbackFilter);
-                  setActiveReviewIndex(0);
-                  setIsReviewFinished(false);
-                }}
-                type="button"
-              >
-                피드백만 보기
-              </button>
-              {/* Skip / Full View */}
-              <button
-                className="px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-800 border border-emerald-200 font-label-sm text-xs font-bold hover:bg-emerald-100 transition cursor-pointer active:scale-95"
                 onClick={handleSkipReview}
+                className="py-1.5 px-1 rounded-lg bg-white border border-gray-200 text-gray-700 text-[11px] font-semibold flex items-center justify-center gap-1 shadow-2xs active:scale-95 whitespace-nowrap cursor-pointer"
                 type="button"
               >
-                전체보기(스킵)
-              </button>
-              {/* Close */}
-              <button
-                className="w-8 h-8 rounded-full bg-slate-100 text-slate-700 flex items-center justify-center hover:bg-slate-200 transition cursor-pointer active:scale-90"
-                onClick={handleCloseReviewModal}
-                type="button"
-                aria-label="닫기"
-              >
-                <span className="material-symbols-outlined text-[18px]">close</span>
+                <span>⏭</span>
+                <span>전체보기</span>
               </button>
             </div>
-          </header>
 
-          {/* Review Content Area */}
-          <div ref={reviewScrollRef} className="flex-1 overflow-y-auto p-4 flex flex-col gap-4 bg-[#faf8ff] pb-32">
-            {isReviewLoading ? (
-              <div className="flex-1 flex flex-col items-center justify-center gap-3 py-20">
-                <div className="w-16 h-16 rounded-full bg-[#004ac6]/10 flex items-center justify-center text-3xl animate-bounce">
-                  🐾
+            {/* 3단: 대화 복습 바디 스크롤 영역 (Dynamic Safe Padding) */}
+            <div
+              ref={reviewScrollRef}
+              className={`flex-1 overflow-y-auto p-4 flex flex-col gap-4 bg-[#faf8ff] transition-all ${
+                isReviewFinished ? 'pb-24' : 'pb-6'
+              }`}
+            >
+              {isReviewLoading ? (
+                <div className="flex-1 flex flex-col items-center justify-center gap-3 py-20">
+                  <div className="w-16 h-16 rounded-full bg-[#004ac6]/10 flex items-center justify-center text-3xl animate-bounce">
+                    🐾
+                  </div>
+                  <p className="font-headline-sm text-sm text-[#004ac6] font-bold text-center animate-pulse">
+                    토키캣이 오늘 나눈 대화를 꼼꼼히 분석하고 있다냥... 🐾
+                  </p>
                 </div>
-                <p className="font-headline-sm text-sm text-[#004ac6] font-bold text-center animate-pulse">
-                  토키캣이 오늘 나눈 대화를 꼼꼼히 분석하고 있다냥... 🐾
-                </p>
-              </div>
-            ) : (
-              <>
-                {(onlyFeedbackFilter
-                  ? messages.filter((m) => m.role === "user" && feedbackList.some((f) => f.originalText === m.messageEn && f.hasError))
-                  : messages
-                ).slice(0, activeReviewIndex + 1).map((m, idx, arr) => {
-                  const isCurrent = idx === arr.length - 1 && !isReviewFinished;
-                  const matchingFeedback = m.role === "user" ? feedbackList.find((f) => f.originalText === m.messageEn) : null;
-                  const isBookmarkedRec = matchingFeedback ? !!bookmarkedMap[matchingFeedback.naturalExpression] : false;
-                  const isBookmarkedCorr = matchingFeedback ? !!bookmarkedMap[matchingFeedback.correctedText] : false;
+              ) : (
+                <>
+                  {(() => {
+                    const itemsToRender = isReviewFinished
+                      ? messages
+                      : messages.slice(0, activeReviewIndex + 1);
 
-                  return (
-                    <div key={m.id || idx} className={`flex flex-col gap-2 animate-in fade-in ${m.role === "user" ? "items-end" : "items-start"}`}>
-                      {/* Bubble */}
-                      <div className={`max-w-[85%] rounded-2xl p-4 shadow-sm border ${
-                        m.role === "assistant"
-                          ? "bg-white text-[#131b2e] border-[#eaedff]"
-                          : "bg-[#004ac6] text-white border-[#004ac6]"
-                      }`}>
-                        <div className="flex items-center justify-between gap-2 mb-1">
-                          <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
-                            m.role === "assistant" ? "bg-[#f2f3ff] text-[#004ac6]" : "bg-white/20 text-white"
+                    return itemsToRender.map((m, idx, arr) => {
+                      const isCurrent = idx === arr.length - 1 && !isReviewFinished;
+                      const matchingFeedback = m.role === "user" ? feedbackList.find((f) => f.originalText === m.messageEn) : null;
+                      const isBookmarkedRec = matchingFeedback ? !!bookmarkedMap[matchingFeedback.naturalExpression] : false;
+                      const isBookmarkedCorr = matchingFeedback ? !!bookmarkedMap[matchingFeedback.correctedText] : false;
+
+                      return (
+                        <div key={m.id || idx} className={`flex flex-col gap-2 animate-in fade-in ${m.role === "user" ? "items-end" : "items-start"}`}>
+                          <div className={`max-w-[85%] rounded-2xl p-4 shadow-sm border ${
+                            m.role === "assistant"
+                              ? "bg-white text-[#131b2e] border-[#eaedff]"
+                              : "bg-[#004ac6] text-white border-[#004ac6]"
                           }`}>
-                            {m.role === "assistant" ? "TalkyCat 🐾" : `${nickname} 🎤`}
-                          </span>
-                          <span className={`text-[10px] ${m.role === "assistant" ? "text-slate-400" : "text-white/70"}`}>
-                            {m.messageKo}
-                          </span>
-                        </div>
-                        <p className="font-headline-sm text-base leading-snug">
-                          {isCurrent && !isReviewFinished ? typedReviewText : m.messageEn}
-                        </p>
-                      </div>
-
-                      {/* Coaching Card for User Utterances */}
-                      {m.role === "user" && matchingFeedback && (
-                        <div className="w-full max-w-[95%] bg-white rounded-2xl p-4 shadow-md border border-amber-200/80 flex flex-col gap-3 animate-in slide-in-from-bottom-2">
-                          <div className="flex items-center justify-between">
-                            <span className="font-label-sm text-xs font-bold text-amber-800 flex items-center gap-1">
-                              <span>🐱</span> 토키캣의 코칭 카드
-                            </span>
-                            <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${matchingFeedback.hasError ? "bg-rose-100 text-rose-800" : "bg-emerald-100 text-emerald-800"}`}>
-                              {matchingFeedback.hasError ? "문법 교정 필요" : "완벽한 표현 🌟"}
-                            </span>
+                            <div className="flex items-center justify-between gap-2 mb-1">
+                              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                                m.role === "assistant" ? "bg-[#f2f3ff] text-[#004ac6]" : "bg-white/20 text-white"
+                              }`}>
+                                {m.role === "assistant" ? "TalkyCat 🐾" : `${nickname} 🎤`}
+                              </span>
+                              <span className={`text-[10px] ${m.role === "assistant" ? "text-slate-400" : "text-white/70"}`}>
+                                {m.messageKo}
+                              </span>
+                            </div>
+                            <p className="font-headline-sm text-base leading-snug">
+                              {isCurrent && !isReviewFinished ? typedReviewText : m.messageEn}
+                            </p>
                           </div>
 
-                          {matchingFeedback.hasError && (
-                            <div className="flex flex-col gap-1 p-2.5 rounded-xl bg-rose-50 border border-rose-100">
+                          {m.role === "user" && matchingFeedback && (
+                            <div className="w-full max-w-[95%] bg-white rounded-2xl p-4 shadow-md border border-amber-200/80 flex flex-col gap-3 animate-in slide-in-from-bottom-2">
                               <div className="flex items-center justify-between">
-                                <span className="text-[11px] font-bold text-rose-900">✏️ 교정 표현 (Correction)</span>
-                                <button
-                                  className={`w-7 h-7 rounded-full flex items-center justify-center transition cursor-pointer active:scale-90 ${
-                                    isBookmarkedCorr ? "bg-amber-500 text-white shadow-xs" : "bg-slate-200 text-slate-600 hover:bg-slate-300"
-                                  }`}
-                                  onClick={() => handleToggleBookmark(matchingFeedback.correctedText, matchingFeedback.koreanTip, matchingFeedback.originalText)}
-                                  type="button"
-                                  title="표현 북마크 저장"
-                                >
-                                  <span className="material-symbols-outlined text-[16px]">
-                                    {isBookmarkedCorr ? "star" : "grade"}
-                                  </span>
-                                </button>
+                                <span className="font-label-sm text-xs font-bold text-amber-800 flex items-center gap-1">
+                                  <span>🐱</span> 토키캣의 코칭 카드
+                                </span>
+                                <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${matchingFeedback.hasError ? "bg-rose-100 text-rose-800" : "bg-emerald-100 text-emerald-800"}`}>
+                                  {matchingFeedback.hasError ? "문법 교정 필요" : "완벽한 표현 🌟"}
+                                </span>
                               </div>
-                              <p className="text-sm font-bold text-rose-950">{matchingFeedback.correctedText}</p>
+
+                              {matchingFeedback.hasError && (
+                                <div className="flex flex-col gap-1 p-2.5 rounded-xl bg-rose-50 border border-rose-100">
+                                  <div className="flex items-center justify-between">
+                                    <span className="text-[11px] font-bold text-rose-900">✏️ 교정 표현 (Correction)</span>
+                                    <button
+                                      className={`w-7 h-7 rounded-full flex items-center justify-center transition cursor-pointer active:scale-90 ${
+                                        isBookmarkedCorr ? "bg-amber-500 text-white shadow-xs" : "bg-slate-200 text-slate-600 hover:bg-slate-300"
+                                      }`}
+                                      onClick={() => handleToggleBookmark(matchingFeedback.correctedText, matchingFeedback.koreanTip, matchingFeedback.originalText)}
+                                      type="button"
+                                      title="표현 북마크 저장"
+                                    >
+                                      <span className="material-symbols-outlined text-[16px]">
+                                        {isBookmarkedCorr ? "star" : "grade"}
+                                      </span>
+                                    </button>
+                                  </div>
+                                  <p className="text-sm font-bold text-rose-950">{matchingFeedback.correctedText}</p>
+                                </div>
+                              )}
+
+                              <div className="flex flex-col gap-1 p-2.5 rounded-xl bg-emerald-50 border border-emerald-100">
+                                <div className="flex items-center justify-between">
+                                  <span className="text-[11px] font-bold text-emerald-900">🌟 원어민 추천 표현 (Natural)</span>
+                                  <div className="flex items-center gap-1">
+                                    <button
+                                      className="w-7 h-7 rounded-full bg-emerald-200 text-emerald-900 flex items-center justify-center hover:bg-emerald-300 transition cursor-pointer active:scale-90"
+                                      onClick={() => playSystemTurn(matchingFeedback.naturalExpression, () => {})}
+                                      type="button"
+                                      title="발음 듣기"
+                                    >
+                                      <span className="material-symbols-outlined text-[15px]">volume_up</span>
+                                    </button>
+                                    <button
+                                      className={`w-7 h-7 rounded-full flex items-center justify-center transition cursor-pointer active:scale-90 ${
+                                        isBookmarkedRec ? "bg-amber-500 text-white shadow-xs" : "bg-slate-200 text-slate-600 hover:bg-slate-300"
+                                      }`}
+                                      onClick={() => handleToggleBookmark(matchingFeedback.naturalExpression, matchingFeedback.koreanTip, matchingFeedback.originalText)}
+                                      type="button"
+                                      title="표현 북마크 저장"
+                                    >
+                                      <span className="material-symbols-outlined text-[16px]">
+                                        {isBookmarkedRec ? "star" : "grade"}
+                                      </span>
+                                    </button>
+                                  </div>
+                                </div>
+                                <p className="text-sm font-bold text-emerald-950">{matchingFeedback.naturalExpression}</p>
+                              </div>
+
+                              <p className="text-xs text-[#434655] font-medium leading-relaxed bg-[#f2f3ff]/60 p-2.5 rounded-xl">
+                                {matchingFeedback.koreanTip}
+                              </p>
                             </div>
                           )}
-
-                          <div className="flex flex-col gap-1 p-2.5 rounded-xl bg-emerald-50 border border-emerald-100">
-                            <div className="flex items-center justify-between">
-                              <span className="text-[11px] font-bold text-emerald-900">🌟 원어민 추천 표현 (Natural)</span>
-                              <div className="flex items-center gap-1">
-                                <button
-                                  className="w-7 h-7 rounded-full bg-emerald-200 text-emerald-900 flex items-center justify-center hover:bg-emerald-300 transition cursor-pointer active:scale-90"
-                                  onClick={() => speakText(matchingFeedback.naturalExpression, 1.0)}
-                                  type="button"
-                                  title="발음 듣기"
-                                >
-                                  <span className="material-symbols-outlined text-[15px]">volume_up</span>
-                                </button>
-                                <button
-                                  className={`w-7 h-7 rounded-full flex items-center justify-center transition cursor-pointer active:scale-90 ${
-                                    isBookmarkedRec ? "bg-amber-500 text-white shadow-xs" : "bg-slate-200 text-slate-600 hover:bg-slate-300"
-                                  }`}
-                                  onClick={() => handleToggleBookmark(matchingFeedback.naturalExpression, matchingFeedback.koreanTip, matchingFeedback.originalText)}
-                                  type="button"
-                                  title="표현 북마크 저장"
-                                >
-                                  <span className="material-symbols-outlined text-[16px]">
-                                    {isBookmarkedRec ? "star" : "grade"}
-                                  </span>
-                                </button>
-                              </div>
-                            </div>
-                            <p className="text-sm font-bold text-emerald-950">{matchingFeedback.naturalExpression}</p>
-                          </div>
-
-                          <p className="text-xs text-[#434655] font-medium leading-relaxed bg-[#f2f3ff]/60 p-2.5 rounded-xl">
-                            {matchingFeedback.koreanTip}
-                          </p>
                         </div>
-                      )}
-                    </div>
-                  );
-                })}
+                      );
+                    });
+                  })()}
 
-                {/* Review Complete Banner */}
-                {isReviewFinished && (
-                  <div className="w-full bg-white rounded-3xl p-6 shadow-xl border border-emerald-200 flex flex-col items-center text-center gap-4 animate-in zoom-in-95 mt-4">
-                    <div className="w-20 h-20 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center text-4xl shadow-inner animate-bounce">
-                      🎉
-                    </div>
-                    <div className="flex flex-col gap-1">
-                      <h3 className="font-headline-md text-xl font-bold text-[#131b2e]">
-                        복습 완료! 수고했다냥! 🌟
-                      </h3>
-                      <p className="font-body-sm text-xs text-[#737686]">
-                        오늘 나눈 대화 복습을 완벽하게 마쳤습니다. 북마크한 표현들은 단어장에서 언제든 다시 볼 수 있어요!
-                      </p>
-                    </div>
-
-                    {/* Bookmarked Expressions Summary in Current Session */}
-                    {bookmarkedItems.length > 0 && (
-                      <div className="w-full bg-[#f2f3ff] rounded-2xl p-4 flex flex-col gap-2 border border-[#eaedff] text-left">
-                        <div className="flex items-center justify-between pb-2 border-b border-[#eaedff]">
-                          <span className="font-label-md text-xs font-bold text-[#004ac6]">
-                            ⭐️ 북마크한 표현 모아보기 ({bookmarkedItems.length}개)
-                          </span>
-                        </div>
-                        <div className="flex flex-col gap-2 max-h-48 overflow-y-auto">
-                          {bookmarkedItems.map((b) => (
-                            <div key={b.id} className="p-2.5 rounded-xl bg-white shadow-2xs border border-[#eaedff] flex items-center justify-between gap-2">
-                              <div className="flex flex-col min-w-0">
-                                <span className="font-headline-sm text-xs font-bold text-[#131b2e] truncate">{b.expression}</span>
-                                <span className="text-[10px] text-[#737686] truncate">원문: &quot;{b.originalContext}&quot;</span>
-                              </div>
-                              <button
-                                className="w-7 h-7 rounded-full bg-[#004ac6]/10 text-[#004ac6] flex items-center justify-center hover:bg-[#004ac6] hover:text-white transition flex-shrink-0 cursor-pointer"
-                                onClick={() => speakText(b.expression, 1.0)}
-                                type="button"
-                                title="발음 듣기"
-                              >
-                                <span className="material-symbols-outlined text-[15px]">volume_up</span>
-                              </button>
-                            </div>
-                          ))}
+                  {/* 스크롤 컨테이너 내부: 콤팩트 완료 배너 */}
+                  {isReviewFinished && (
+                    <div className="w-full bg-emerald-50/80 border border-emerald-200/90 rounded-2xl p-3 flex items-center justify-between gap-2 mt-2 shrink-0 animate-in fade-in slide-in-from-bottom-2">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className="text-lg shrink-0">🎉</span>
+                        <div className="flex flex-col min-w-0">
+                          <span className="text-xs font-bold text-emerald-950 truncate">복습을 모두 마쳤다냥! 🌟</span>
+                          <span className="text-[11px] text-emerald-700 truncate">오늘 나눈 대화 표현을 잘 기억해두라냥.</span>
                         </div>
                       </div>
-                    )}
-
-                    <div className="flex gap-2 w-full pt-2">
-                      <button
-                        className="flex-1 py-3 rounded-2xl bg-[#eaedff] text-[#131b2e] font-label-md text-sm font-bold hover:bg-[#e2e7ff] transition cursor-pointer"
-                        onClick={() => {
-                          setActiveReviewIndex(0);
-                          setIsReviewFinished(false);
-                          setTypedReviewText("");
-                        }}
-                        type="button"
-                      >
-                        다시 복습하기 🔄
-                      </button>
-                      <button
-                        className="flex-1 py-3 rounded-2xl bg-[#004ac6] text-white font-label-md text-sm font-bold shadow-md hover:bg-[#2563eb] transition cursor-pointer"
-                        onClick={handleCloseReviewModal}
-                        type="button"
-                      >
-                        복습 종료 🐾
-                      </button>
+                      {bookmarkedItems.length > 0 && (
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-white text-emerald-800 border border-emerald-200 shadow-2xs shrink-0 whitespace-nowrap">
+                          ⭐️ 북마크 {bookmarkedItems.length}개
+                        </span>
+                      )}
                     </div>
-                  </div>
-                )}
-              </>
+                  )}
+                </>
+              )}
+            </div>
+
+            {/* 복습 완료 시 모달 하단에 고정되는 콤팩트 액션 독 (Bottom Sticky Dock) */}
+            {isReviewFinished && (
+              <div className="p-3 bg-white/95 backdrop-blur-md border-t border-gray-100 flex items-center gap-2 shrink-0 animate-in slide-in-from-bottom-3 z-20">
+                <button
+                  onClick={handleRestartReview}
+                  type="button"
+                  className="flex-1 py-2.5 px-3 rounded-xl bg-orange-50 hover:bg-orange-100 text-orange-600 border border-orange-200 text-xs font-bold flex items-center justify-center gap-1.5 transition-all active:scale-95 cursor-pointer shadow-2xs"
+                >
+                  <span>🔄</span>
+                  <span>다시 복습하기</span>
+                </button>
+                <button
+                  onClick={handleCloseReviewModal}
+                  type="button"
+                  className="flex-1 py-2.5 px-3 rounded-xl bg-orange-500 hover:bg-orange-600 text-white text-xs font-bold flex items-center justify-center gap-1.5 transition-all active:scale-95 cursor-pointer shadow-xs"
+                >
+                  <span>🐾</span>
+                  <span>복습 종료</span>
+                </button>
+              </div>
             )}
           </div>
         </div>
@@ -1405,7 +1605,7 @@ export default function FreeTalkPage() {
         </div>
       )}
 
-      {/* Exit or Reset Confirmation Modal with Review Prompt */}
+      {/* Exit or Reset Confirmation Modal */}
       {isExitConfirmOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-in fade-in">
           <div className="w-full max-w-[360px] bg-white rounded-3xl p-6 shadow-2xl flex flex-col items-center text-center gap-4">
@@ -1450,7 +1650,7 @@ export default function FreeTalkPage() {
         </div>
       )}
 
-      {/* Silent Correction Modal / Popover */}
+      {/* Silent Correction Modal */}
       {isCorrectionModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4 animate-fade-in">
           <div className="w-full max-w-sm bg-white rounded-3xl p-6 shadow-2xl flex flex-col gap-4 border border-amber-200">
