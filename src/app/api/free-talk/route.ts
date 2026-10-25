@@ -12,14 +12,21 @@ export async function POST(request: Request) {
   let parsedAnchorTopic: string | null = null;
   try {
     const body = await request.json().catch(() => ({}));
-    const { history = [], userMessage = "", anchorTopic = null, isReset = false, userLevel = "A1" } = body;
+    const { history = [], userMessage = "", anchorTopic = null, isReset = false, userLevel = "A1", mode = "chat", targetSentence = "" } = body;
     parsedAnchorTopic = anchorTopic;
     const validatedLevel: UserLevel = typeof userLevel === "string" ? (userLevel as UserLevel) : "A1";
 
     const apiKey = process.env.GEMINI_API_KEY;
-    const isDefaultTopic = !anchorTopic || anchorTopic === "Casual Chat" || anchorTopic === "Free Talk" || anchorTopic === "General Chat";
 
     if (!apiKey) {
+      if (mode === "simplify") {
+        return NextResponse.json({
+          success: true,
+          simplifiedEn: targetSentence,
+          simplifiedKo: "(더 쉬운 표현으로 변환)"
+        });
+      }
+      const isDefaultTopic = !anchorTopic || anchorTopic === "Casual Chat" || anchorTopic === "Free Talk" || anchorTopic === "General Chat";
       return NextResponse.json({
         success: true,
         messageEn: !isDefaultTopic ? `Let's talk about ${anchorTopic} again! What are your thoughts?` : "That sounds interesting! Tell me more about it.",
@@ -34,6 +41,54 @@ export async function POST(request: Request) {
     }
 
     const ai = new GoogleGenAI({ apiKey });
+
+    if (mode === "simplify") {
+      const simplifyPrompt = `
+You are TalkyCat, a friendly English conversation partner.
+The user wants you to simplify the following English sentence into very basic A1-A2 level English words and short, simple sentences (max 1-2 sentences), suitable for beginners.
+Target sentence to simplify: "${targetSentence}"
+User level: ${validatedLevel}
+
+[CRITICAL: NO EMOJIS IN simplifiedEn]
+- \`simplifiedEn\` must contain ONLY pure English alphabet and punctuation (. , ? !), NO emojis.
+
+[Output JSON format]
+{
+  "simplifiedEn": "Very simple English sentence(s) at A1-A2 level",
+  "simplifiedKo": "초보자용 친절한 한국어 번역 (이모지 가능)"
+}
+`;
+
+      const response = await ai.models.generateContent({
+        model: "gemini-3.5-flash-lite",
+        contents: simplifyPrompt,
+        config: {
+          responseMimeType: "application/json",
+          temperature: 0.5,
+          maxOutputTokens: 100,
+        },
+      });
+
+      const responseText = response.text;
+      let parsed;
+      try {
+        const cleaned = responseText ? responseText.replace(/```json/g, "").replace(/```/g, "").trim() : "{}";
+        parsed = JSON.parse(cleaned);
+      } catch {
+        parsed = {
+          simplifiedEn: targetSentence,
+          simplifiedKo: "(더 쉬운 표현으로 변환)"
+        };
+      }
+
+      return NextResponse.json({
+        success: true,
+        simplifiedEn: parsed.simplifiedEn || targetSentence,
+        simplifiedKo: parsed.simplifiedKo || "(더 쉬운 표현으로 변환)"
+      });
+    }
+
+    const isDefaultTopic = !anchorTopic || anchorTopic === "Casual Chat" || anchorTopic === "Free Talk" || anchorTopic === "General Chat";
 
     const levelInstruction = getLevelInstruction(validatedLevel);
 

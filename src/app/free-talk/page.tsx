@@ -94,6 +94,12 @@ export default function FreeTalkPage() {
   const [reviewRestartKey, setReviewRestartKey] = useState(0);
   const [bookmarkedMap, setBookmarkedMap] = useState<Record<string, boolean>>({});
   const [bookmarkedItems, setBookmarkedItems] = useState<BookmarkedExpression[]>([]);
+  
+  // Feedback Report Modal States
+  const [isFeedbackModalOpen, setIsFeedbackModalOpen] = useState(false);
+  const [isFeedbackLoading, setIsFeedbackLoading] = useState(false);
+  const [feedbackReportList, setFeedbackReportList] = useState<FeedbackItem[]>([]);
+
   const [isExitConfirmOpen, setIsExitConfirmOpen] = useState(false);
   const [exitActionType, setExitActionType] = useState<"back" | "reset">("back");
 
@@ -286,13 +292,31 @@ export default function FreeTalkPage() {
     sendUserMessageToAPI(cleaned);
   }, [turnStatus, teardownSTT]);
 
-  // Safe STT Instance Factory Function
-  const initSpeechRecognition = useCallback(() => {
-    if (typeof window === 'undefined') return null;
+  // Clean STT Instance Factory & Launcher (Zombie Instance Prevention)
+  const startCleanSpeechRecognition = () => {
+    if (typeof window === 'undefined') return;
 
-    const SpeechRecognitionAPI = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SpeechRecognitionAPI) return null;
+    const SpeechRecognitionAPI =
+      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognitionAPI) return;
 
+    // 1. 기존 타이머 및 인스턴스 리스너 완전 강제 해제
+    if (silenceTimerRef.current) {
+      clearTimeout(silenceTimerRef.current);
+      silenceTimerRef.current = null;
+    }
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.onstart = null;
+        recognitionRef.current.onresult = null;
+        recognitionRef.current.onerror = null;
+        recognitionRef.current.onend = null;
+        recognitionRef.current.abort();
+      } catch (e) {}
+      recognitionRef.current = null;
+    }
+
+    // 2. 신규 인스턴스 생성
     const rec = new SpeechRecognitionAPI();
     rec.lang = 'en-US';
     rec.continuous = true;
@@ -300,90 +324,66 @@ export default function FreeTalkPage() {
     rec.maxAlternatives = 1;
 
     rec.onstart = () => {
-      console.log('✅ 마이크 하드웨어 정상 활성화됨 (onstart)');
-      setTurnStatus('USER_LISTENING');
-      setStatusText("🎤 듣고 있다냥! 편하게 말씀해보라냥");
+      console.log('✅ 신규 마이크 세션 정상 가동됨 (onstart)');
       isRecognizingRef.current = true;
+      setTurnStatus('USER_LISTENING');
+      setStatusText('🎤 듣고 있다냥! 편하게 말씀해보라냥');
     };
 
     rec.onresult = (event: any) => {
-      if (turnStatus === "SYSTEM_SPEAKING" || turnStatus === "WAITING_START_TOUCH" || isThinking || isProcessingRef.current) return;
-      let interim = "";
-      let finalTranscript = "";
+      // 클로저 이슈 방지를 위해 Ref 기반 플래그로만 유효성 판정
+      if (!isRecognizingRef.current || isProcessingRef.current) return;
 
-      for (let i = event.resultIndex; i < event.results.length; ++i) {
-        const transcript = event.results[i][0].transcript;
-        if (event.results[i].isFinal) {
-          finalTranscript += transcript + " ";
-        } else {
-          interim += transcript;
-        }
+      let currentText = '';
+      for (let i = 0; i < event.results.length; ++i) {
+        currentText += event.results[i][0].transcript;
       }
 
-      const accumulated = (finalTranscript + interim).trim();
-      if (accumulated) {
-        latestTranscriptRef.current = accumulated;
-        setRecognizedText(accumulated);
-      }
+      const trimmed = currentText.trim();
+      if (trimmed) {
+        latestTranscriptRef.current = trimmed;
+        setRecognizedText(trimmed);
 
-      if (silenceTimerRef.current) {
-        clearTimeout(silenceTimerRef.current);
-      }
-      silenceTimerRef.current = setTimeout(() => {
-        if (isRecognizingRef.current && latestTranscriptRef.current && turnStatus === "USER_LISTENING" && !isThinking && !isProcessingRef.current) {
-          handleSpeechResult(latestTranscriptRef.current);
-        }
-      }, 2800);
+        // 발화 중 침묵 타이머 갱신
+        if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
 
-      if (finalTranscript.trim() && turnStatus === "USER_LISTENING" && !isThinking && !isProcessingRef.current) {
-        handleSpeechResult(finalTranscript.trim());
+        // 발화 멈춤 1.6초 후 100% 자동 전송
+        silenceTimerRef.current = setTimeout(() => {
+          if (latestTranscriptRef.current && latestTranscriptRef.current.length >= 2) {
+            console.log('침묵 감지: 자동 전송 실행 ->', latestTranscriptRef.current);
+            teardownSTT();
+            sendUserMessageToAPI(latestTranscriptRef.current);
+          }
+        }, 1600);
       }
     };
 
     rec.onerror = (event: any) => {
-      console.warn('STT 오류 발생:', event.error);
+      console.warn('STT 에러 발생:', event.error);
       if (event.error === 'no-speech') {
-        setStatusText("다시 편하게 말해보라냥! 🐾");
+        setStatusText('다시 편하게 말씀해보라냥! 🐾');
       }
       if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
         setTurnStatus('PREPARING');
+        isRecognizingRef.current = false;
       }
-      isRecognizingRef.current = false;
     };
 
     rec.onend = () => {
-      console.log('마이크 비활성화됨 (onend)');
       isRecognizingRef.current = false;
     };
 
     recognitionRef.current = rec;
-    return rec;
-  }, [turnStatus, isThinking, handleSpeechResult]);
 
-  const startRealSpeechRecognition = useCallback(() => {
-    let rec = recognitionRef.current;
-    if (!rec) {
-      rec = initSpeechRecognition();
-    }
-    if (!rec) return;
-
-    try {
-      rec.start();
-    } catch (e: any) {
-      console.log('마이크 재시도 중...', e);
+    // 3. 브라우저 안정화를 위해 50ms 틱 후 구동
+    setTimeout(() => {
       try {
-        rec.abort();
-        setTimeout(() => {
-          try {
-            rec?.start();
-            isRecognizingRef.current = true;
-          } catch (err) {
-            console.warn("마이크 재시도 실패:", err);
-          }
-        }, 150);
-      } catch (err) {}
-    }
-  }, [initSpeechRecognition]);
+        rec.start();
+      } catch (err) {
+        console.warn('마이크 시작 예외 발생:', err);
+      }
+    }, 50);
+  };
 
   const cleanTextForTTS = (text: string) => {
     return text
@@ -450,7 +450,7 @@ export default function FreeTalkPage() {
     if (typeof window === "undefined" || !("speechSynthesis" in window)) {
       setTurnStatus("USER_LISTENING");
       if (onEnded) onEnded();
-      else startRealSpeechRecognition();
+      else startCleanSpeechRecognition();
       return;
     }
 
@@ -488,13 +488,13 @@ export default function FreeTalkPage() {
         if (onEnded) {
           onEnded();
         } else {
-          startRealSpeechRecognition();
+          startCleanSpeechRecognition();
         }
       }, 800);
     };
 
     proceedToUserTurn();
-  }, [speakFullMessage, startRealSpeechRecognition]);
+  }, [speakFullMessage, startCleanSpeechRecognition]);
 
   // Initial Greeting with Autoplay Policy Check & Voice Loading
   const startInitialGreeting = async () => {
@@ -545,7 +545,7 @@ export default function FreeTalkPage() {
       setTurnStatus('PREPARING');
       setStatusText("⏳ 들을 준비 중이다냥...");
       setTimeout(() => {
-        startRealSpeechRecognition();
+        startCleanSpeechRecognition();
       }, 800);
     };
 
@@ -594,7 +594,7 @@ export default function FreeTalkPage() {
       isProcessingRef.current = false;
       setIsThinking(false);
       setStatusText("토키캣이 잠시 쉬고 있다냥. 다시 말해보세요! 🐾");
-      startRealSpeechRecognition();
+      startCleanSpeechRecognition();
     }, 8000);
 
     const userMsg: ChatMessage = {
@@ -633,7 +633,7 @@ export default function FreeTalkPage() {
         setIsThinking(false);
         setStatusText("요청이 너무 많다냥! 잠시 뒤 시도해줘 🐾");
         showToast("현재 대화 요청이 몰려 잠시 대기 중이다냥. 20초 뒤에 마이크를 눌러달라냥! 🐾");
-        startRealSpeechRecognition();
+        startCleanSpeechRecognition();
         return;
       }
 
@@ -670,14 +670,9 @@ export default function FreeTalkPage() {
       setIsThinking(false);
       setStatusText("통신 중 오류가 발생했다냥. 다시 시도해줘! 🐾");
       showToast("응답을 불러오지 못했습니다.");
-      startRealSpeechRecognition();
+      startCleanSpeechRecognition();
     }
-  }, [playSystemTurn, teardownSTT, startRealSpeechRecognition]);
-
-  // Initialize Speech Recognition instance on mount
-  useEffect(() => {
-    initSpeechRecognition();
-  }, [initSpeechRecognition]);
+  }, [playSystemTurn, teardownSTT, startCleanSpeechRecognition]);
 
   // Initial Entry
   useEffect(() => {
@@ -723,23 +718,78 @@ export default function FreeTalkPage() {
   };
 
   const handleSlowReplay = () => {
-    const latest = [...messages].reverse().find(m => m.role === "assistant");
-    if (latest) {
-      playSystemTurn(latest.messageEn, () => {
-        startRealSpeechRecognition();
+    const latest = [...messages].reverse().find((m) => m.role === "assistant");
+    if (!latest || isThinking || turnStatus === "SYSTEM_SPEAKING") return;
+
+    teardownSTT();
+    setTurnStatus("SYSTEM_SPEAKING");
+    setStatusText("🐢 0.8배속으로 또박또박 읽어준다냥...");
+    showToast("0.8배속으로 천천히 들려드립니다 🐾");
+
+    // 0.8 배속으로 발화 후 다시 마이크 듣기 모드로 전환
+    speakFullMessage(latest.messageEn, 0.8).then(() => {
+      setTurnStatus("PREPARING");
+      setTimeout(() => {
+        startCleanSpeechRecognition();
+      }, 600);
+    });
+  };
+
+  const handleSimpleExplanation = async () => {
+    const latest = [...messages].reverse().find((m) => m.role === "assistant");
+    if (!latest || isThinking || turnStatus === "SYSTEM_SPEAKING") return;
+
+    teardownSTT();
+    setIsThinking(true);
+    setStatusText("💡 더 쉬운 표현으로 바꾸고 있다냥... 🐾");
+
+    try {
+      const res = await fetch("/api/free-talk", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mode: "simplify",
+          targetSentence: latest.messageEn,
+          anchorTopic: anchorTopicRef.current,
+          userLevel: userLevelRef.current,
+        }),
       });
-      showToast("0.8배속으로 또박또박 재생합니다 🐾");
+
+      const data = await res.json();
+      setIsThinking(false);
+
+      if (data.success && data.simplifiedEn) {
+        // 마지막 메시지의 영어와 한글을 더 쉬운 문장으로 덮어쓰기 업데이트
+        setMessages((prev) => {
+          const next = [...prev];
+          const lastIdx = next.map((m) => m.role).lastIndexOf("assistant");
+          if (lastIdx !== -1) {
+            next[lastIdx] = {
+              ...next[lastIdx],
+              messageEn: data.simplifiedEn,
+              messageKo: data.simplifiedKo,
+            };
+          }
+          return next;
+        });
+
+        showToast("더 알기 쉬운 쉬운 문장으로 바꿨다냥! 💡");
+        // 새롭게 변환된 쉬운 문장을 음성으로 발화
+        playSystemTurn(data.simplifiedEn);
+      } else {
+        throw new Error("Simplification failed");
+      }
+    } catch (e) {
+      setIsThinking(false);
+      showToast("문장을 쉽게 바꾸지 못했습니다.");
+      startCleanSpeechRecognition();
     }
   };
 
-  const handleSimpleExplanation = () => {
-    if (isThinking || turnStatus === "SYSTEM_SPEAKING" || turnStatus === "WAITING_START_TOUCH" || isProcessingRef.current) return;
-    sendUserMessageToAPI("Could you explain this in much simpler English and simpler words, please?");
-  };
-
-  // Trigger Review Modal
+  // Trigger Review Modal (Sequential Audio & Typing Playback)
   const handleOpenReview = async () => {
-    const userTurns = messages.filter((m) => m.role === "user");
+    const currentMessages = messagesRef.current.length > 0 ? messagesRef.current : messages;
+    const userTurns = currentMessages.filter((m) => m.role === "user");
     if (userTurns.length === 0) {
       showToast("복습할 대화 내역이 없다냥!");
       return;
@@ -768,8 +818,8 @@ export default function FreeTalkPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          messages: messages,
-          userLevel: userLevel
+          messages: currentMessages,
+          userLevel: userLevelRef.current || userLevel
         })
       });
       const data = await res.json();
@@ -796,7 +846,7 @@ export default function FreeTalkPage() {
     }
   }, [isReviewFinished]);
 
-  // Review Sequential Playback Effect with 3-Button Toolbar & messages as 1:1 source
+  // Review Sequential Playback Effect
   useEffect(() => {
     if (!isReviewModalOpen || isReviewLoading || isReviewFinished || isReviewPaused) {
       if (isReviewPaused && typeof window !== "undefined" && "speechSynthesis" in window) {
@@ -824,7 +874,6 @@ export default function FreeTalkPage() {
     const fullText = currentMsg.messageEn;
     setTypedReviewText("");
 
-    // 1. Typing animation Promise
     const typingPromise = new Promise<void>((resolve) => {
       let charIdx = 0;
       const fullLen = fullText.length;
@@ -843,10 +892,8 @@ export default function FreeTalkPage() {
       }, Math.round(30 / reviewSpeed));
     });
 
-    // 2. Speech full message Promise with chunking & GC defense
     const speechPromise = speakFullMessage(fullText, reviewSpeed);
 
-    // Auto scroll review container
     if (reviewScrollRef.current) {
       reviewScrollRef.current.scrollTop = reviewScrollRef.current.scrollHeight;
     }
@@ -919,6 +966,78 @@ export default function FreeTalkPage() {
     }
     currentUtteranceRef.current = null;
     setIsReviewModalOpen(false);
+  };
+
+  // Trigger Feedback Analysis Report Modal
+  const handleOpenFeedbackReport = async () => {
+    const currentMessages = messagesRef.current.length > 0 ? messagesRef.current : messages;
+    const userTurns = currentMessages.filter((m) => m.role === "user");
+
+    if (userTurns.length === 0) {
+      showToast("분석할 대화 내역이 없다냥!");
+      return;
+    }
+
+    teardownSTT();
+    if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      window.speechSynthesis.cancel();
+    }
+    if (keepAliveTimerRef.current) {
+      clearInterval(keepAliveTimerRef.current);
+      keepAliveTimerRef.current = null;
+    }
+
+    setIsFeedbackModalOpen(true);
+    setIsFeedbackLoading(true);
+
+    // 1. 사용자 발화 문장들을 기본 뼈대로 초기화 (발화 내역 유실 방지)
+    const initialList: FeedbackItem[] = userTurns.map((u, i) => ({
+      id: u.id || `fb-${i}`,
+      originalText: u.messageEn,
+      hasError: false,
+      correctedText: u.messageEn,
+      naturalExpression: u.messageEn,
+      koreanTip: "완벽하고 자연스러운 표현이다냥! 🌟",
+    }));
+    setFeedbackReportList(initialList);
+
+    try {
+      const res = await fetch("/api/freetalk/feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          messages: currentMessages,
+          userLevel: userLevelRef.current || userLevel,
+        }),
+      });
+
+      const data = await res.json();
+      if (data.success && Array.isArray(data.feedback)) {
+        // 2. 백엔드에서 분석된 피드백을 사용자 발화 문장에 정밀 매핑
+        const mergedList = initialList.map((item) => {
+          const found = data.feedback.find(
+            (f: any) =>
+              f.originalText?.trim().toLowerCase() === item.originalText.trim().toLowerCase()
+          );
+          if (found) {
+            return {
+              ...item,
+              hasError: found.hasError ?? false,
+              correctedText: found.correctedText || item.originalText,
+              naturalExpression: found.naturalExpression || item.originalText,
+              koreanTip: found.koreanTip || (found.hasError ? "교정된 표현을 확인해보라냥!" : "자연스러운 문장이다냥! 🌟"),
+            };
+          }
+          return item;
+        });
+        setFeedbackReportList(mergedList);
+      }
+    } catch (e) {
+      console.error("Failed to fetch feedback report", e);
+      showToast("피드백 분석 중 일부 오류가 발생했습니다.");
+    } finally {
+      setIsFeedbackLoading(false);
+    }
   };
 
   const handleToggleBookmark = (expression: string, meaning: string, originalContext: string) => {
@@ -994,7 +1113,8 @@ export default function FreeTalkPage() {
   };
 
   const handleBackClick = () => {
-    const userTurns = messages.filter((m) => m.role === "user");
+    const currentMessages = messagesRef.current.length > 0 ? messagesRef.current : messages;
+    const userTurns = currentMessages.filter((m) => m.role === "user");
     if (userTurns.length > 0) {
       setExitActionType("back");
       setIsExitConfirmOpen(true);
@@ -1176,7 +1296,7 @@ export default function FreeTalkPage() {
               <button
                 className="w-7 h-7 rounded-full bg-[#f2f3ff] hover:bg-[#e2e7ff] text-[#004ac6] flex items-center justify-center transition-colors cursor-pointer active:scale-95 shadow-xs"
                 onClick={() => {
-                  if (latestAssistantMsg) playSystemTurn(latestAssistantMsg.messageEn, () => startRealSpeechRecognition());
+                  if (latestAssistantMsg) playSystemTurn(latestAssistantMsg.messageEn, () => startCleanSpeechRecognition());
                 }}
                 title="다시 듣기"
                 type="button"
@@ -1270,7 +1390,7 @@ export default function FreeTalkPage() {
               <button
                 className="w-11 h-11 rounded-full bg-white text-[#004ac6] flex items-center justify-center hover:bg-[#e2e7ff] active:scale-90 transition shadow-xs cursor-pointer"
                 onClick={() => {
-                  if (latestAssistantMsg) playSystemTurn(latestAssistantMsg.messageEn, () => startRealSpeechRecognition());
+                  if (latestAssistantMsg) playSystemTurn(latestAssistantMsg.messageEn, () => startCleanSpeechRecognition());
                 }}
                 type="button"
                 aria-label="다시듣기"
@@ -1296,7 +1416,7 @@ export default function FreeTalkPage() {
                       }
                       handleSpeechResult(recognizedText);
                     } else {
-                      startRealSpeechRecognition();
+                      startCleanSpeechRecognition();
                       showToast("마이크가 켜졌습니다. 말씀해 보세요!");
                     }
                   }
@@ -1317,9 +1437,9 @@ export default function FreeTalkPage() {
               </button>
               <span className="font-label-sm text-[10px] text-[#004ac6] font-semibold mt-0.5 whitespace-nowrap">
                 {turnStatus === 'SYSTEM_SPEAKING' && "🔊 토키캣이 말하고 있다냥..."}
-                {turnStatus === 'PREPARING' && "⏳ 들을 준비 중이다냥..."}
+                {turnStatus === 'PREPARING' && "⏳ 답변 준비 중이다냥..."}
                 {turnStatus === 'WAITING_START_TOUCH' && "🐾 터치하여 대화 시작"}
-                {turnStatus === 'USER_LISTENING' && (recognizedText.trim().length > 0 ? "🎤 보내기 (터치)" : "🎤 듣고 있다냥! (말씀하세요)")}
+                {turnStatus === 'USER_LISTENING' && "🎤 듣고 있다냥..."}
               </span>
             </div>
 
@@ -1339,7 +1459,7 @@ export default function FreeTalkPage() {
 
       </div>
 
-      {/* 🎧 REVIEW & BOOKMARK MODAL (Optimized UI/UX with Bottom Sticky Dock) */}
+      {/* 🎧 REVIEW & BOOKMARK MODAL (Sequential Audio Playback) */}
       {isReviewModalOpen && (
         <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-0 sm:p-2">
           <div className="w-full max-w-[480px] h-[100dvh] sm:h-[92vh] sm:rounded-3xl bg-white flex flex-col animate-in fade-in select-none shadow-2xl overflow-hidden relative">
@@ -1361,7 +1481,6 @@ export default function FreeTalkPage() {
 
             {/* 2단: 3개 컨트롤 버튼 전용 툴바 (균등 3열 그리드) */}
             <div className="px-3 py-2 bg-orange-50/50 border-b border-orange-100/70 grid grid-cols-3 gap-2 shrink-0">
-              {/* 1. 일시정지 / 재생 토글 */}
               <button
                 onClick={() => setIsReviewPaused(!isReviewPaused)}
                 className="py-1.5 px-1 rounded-lg bg-white border border-gray-200 text-gray-700 text-[11px] font-semibold flex items-center justify-center gap-1 shadow-2xs active:scale-95 whitespace-nowrap cursor-pointer"
@@ -1370,8 +1489,6 @@ export default function FreeTalkPage() {
                 <span>{isReviewPaused ? '▶' : '⏸'}</span>
                 <span>{isReviewPaused ? '재생' : '일시정지'}</span>
               </button>
-
-              {/* 2. 배속 조절 (1.0x -> 1.2x -> 0.8x) */}
               <button
                 onClick={() => {
                   if (reviewSpeed === 1.0) setReviewSpeed(1.2);
@@ -1385,8 +1502,6 @@ export default function FreeTalkPage() {
                 <span>⚡</span>
                 <span>{reviewSpeed}x 배속</span>
               </button>
-
-              {/* 3. 전체보기 (스킵) */}
               <button
                 onClick={handleSkipReview}
                 className="py-1.5 px-1 rounded-lg bg-white border border-gray-200 text-gray-700 text-[11px] font-semibold flex items-center justify-center gap-1 shadow-2xs active:scale-95 whitespace-nowrap cursor-pointer"
@@ -1397,7 +1512,7 @@ export default function FreeTalkPage() {
               </button>
             </div>
 
-            {/* 3단: 대화 복습 바디 스크롤 영역 (Dynamic Safe Padding) */}
+            {/* 3단: 대화 복습 바디 스크롤 영역 */}
             <div
               ref={reviewScrollRef}
               className={`flex-1 overflow-y-auto p-4 flex flex-col gap-4 bg-[#faf8ff] transition-all ${
@@ -1519,7 +1634,6 @@ export default function FreeTalkPage() {
                     });
                   })()}
 
-                  {/* 스크롤 컨테이너 내부: 콤팩트 완료 배너 */}
                   {isReviewFinished && (
                     <div className="w-full bg-emerald-50/80 border border-emerald-200/90 rounded-2xl p-3 flex items-center justify-between gap-2 mt-2 shrink-0 animate-in fade-in slide-in-from-bottom-2">
                       <div className="flex items-center gap-2 min-w-0">
@@ -1540,7 +1654,6 @@ export default function FreeTalkPage() {
               )}
             </div>
 
-            {/* 복습 완료 시 모달 하단에 고정되는 콤팩트 액션 독 (Bottom Sticky Dock) */}
             {isReviewFinished && (
               <div className="p-3 bg-white/95 backdrop-blur-md border-t border-gray-100 flex items-center gap-2 shrink-0 animate-in slide-in-from-bottom-3 z-20">
                 <button
@@ -1561,6 +1674,155 @@ export default function FreeTalkPage() {
                 </button>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* 💡 FEEDBACK ANALYSIS REPORT MODAL */}
+      {isFeedbackModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-0 sm:p-2">
+          <div className="w-full max-w-[480px] h-[100dvh] sm:h-[92vh] sm:rounded-3xl bg-white flex flex-col animate-in fade-in select-none shadow-2xl overflow-hidden relative">
+            
+            {/* Modal Header */}
+            <div className="h-14 px-4 flex items-center justify-between border-b border-gray-100 bg-white shrink-0">
+              <div className="flex items-center gap-2">
+                <span className="text-lg">💡</span>
+                <span className="font-headline-sm text-base font-bold text-gray-900">오늘 대화 피드백 리포트</span>
+              </div>
+              <button
+                onClick={() => setIsFeedbackModalOpen(false)}
+                className="p-1.5 text-gray-400 hover:text-gray-600 rounded-full hover:bg-gray-100 active:scale-95 transition-all cursor-pointer"
+                aria-label="닫기"
+                type="button"
+              >
+                <span className="text-xl leading-none">✕</span>
+              </button>
+            </div>
+
+            {/* Modal Body Scroll Area */}
+            <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-4 bg-[#faf8ff] pb-24">
+              {isFeedbackLoading ? (
+                <div className="flex-1 flex flex-col items-center justify-center gap-3 py-20">
+                  <div className="w-16 h-16 rounded-full bg-[#004ac6]/10 flex items-center justify-center text-3xl animate-bounce">
+                    🐾
+                  </div>
+                  <p className="font-headline-sm text-sm text-[#004ac6] font-bold text-center animate-pulse">
+                    토키캣이 오늘 나눈 대화를 꼼꼼히 분석하고 있다냥... 🐾
+                  </p>
+                </div>
+              ) : feedbackReportList.length === 0 ? (
+                <div className="flex-1 flex flex-col items-center justify-center gap-3 py-20 text-center">
+                  <div className="text-4xl">🐾</div>
+                  <p className="text-sm font-semibold text-gray-600">분석할 사용자 발화 내역이 없다냥! 먼저 토키캣과 영어로 대화를 나눠보세요 🐾</p>
+                </div>
+              ) : (
+                <>
+                  {/* Summary Card */}
+                  <div className="bg-gradient-to-r from-orange-500 to-amber-500 rounded-2xl p-4 text-white shadow-md flex items-center gap-3">
+                    <div className="text-3xl shrink-0">🐱</div>
+                    <div className="flex flex-col gap-1 min-w-0">
+                      <h4 className="font-bold text-sm">토키캣의 코칭 총평</h4>
+                      <p className="text-xs text-white/95 leading-relaxed">
+                        오늘 총 {feedbackReportList.length}개의 문장을 멋지게 말해주었어요! 아래 카드를 통해 문법 교정 표현과 원어민 추천 표현을 복습해보세요 🌟
+                      </p>
+                    </div>
+                  </div>
+
+                  {feedbackReportList.map((item, idx) => {
+                    const isBookmarkedRec = !!bookmarkedMap[item.naturalExpression];
+                    const isBookmarkedCorr = !!bookmarkedMap[item.correctedText];
+
+                    return (
+                      <div key={item.id || idx} className="bg-white rounded-2xl p-4 shadow-md border border-amber-200/80 flex flex-col gap-3 animate-in fade-in">
+                        <div className="flex items-center justify-between">
+                          <span className="font-label-sm text-xs font-bold text-amber-800 flex items-center gap-1">
+                            <span>🐱</span> 대화 턴 #{idx + 1}
+                          </span>
+                          <span className={`px-2.5 py-0.5 rounded-full text-[11px] font-bold ${item.hasError ? "bg-rose-100 text-rose-800" : "bg-emerald-100 text-emerald-800"}`}>
+                            {item.hasError ? "문법 교정 필요 ✏️" : "완벽한 표현 🌟"}
+                          </span>
+                        </div>
+
+                        {/* 1. Original Utterance */}
+                        <div className="flex flex-col gap-1 p-2.5 rounded-xl bg-slate-50 border border-slate-200/60">
+                          <span className="text-[11px] font-bold text-slate-600">🗣 내가 한 말 (Original)</span>
+                          <p className="text-sm font-bold text-slate-900">&ldquo;{item.originalText}&rdquo;</p>
+                        </div>
+
+                        {/* 2. Correction */}
+                        {item.hasError && (
+                          <div className="flex flex-col gap-1 p-2.5 rounded-xl bg-rose-50 border border-rose-100">
+                            <div className="flex items-center justify-between">
+                              <span className="text-[11px] font-bold text-rose-900">✏️ 문법/문맥 교정 (Correction)</span>
+                              <button
+                                className={`w-7 h-7 rounded-full flex items-center justify-center transition cursor-pointer active:scale-90 ${
+                                  isBookmarkedCorr ? "bg-amber-500 text-white shadow-xs" : "bg-slate-200 text-slate-600 hover:bg-slate-300"
+                                }`}
+                                onClick={() => handleToggleBookmark(item.correctedText, item.koreanTip, item.originalText)}
+                                type="button"
+                                title="표현 북마크 저장"
+                              >
+                                <span className="material-symbols-outlined text-[16px]">
+                                  {isBookmarkedCorr ? "star" : "grade"}
+                                </span>
+                              </button>
+                            </div>
+                            <p className="text-sm font-bold text-rose-950">{item.correctedText}</p>
+                          </div>
+                        )}
+
+                        {/* 3. Natural Expression */}
+                        <div className="flex flex-col gap-1 p-2.5 rounded-xl bg-emerald-50 border border-emerald-100">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[11px] font-bold text-emerald-900">🌟 원어민 추천 표현 (Natural)</span>
+                            <div className="flex items-center gap-1">
+                              <button
+                                className="w-7 h-7 rounded-full bg-emerald-200 text-emerald-900 flex items-center justify-center hover:bg-emerald-300 transition cursor-pointer active:scale-90"
+                                onClick={() => playSystemTurn(item.naturalExpression, () => {})}
+                                type="button"
+                                title="발음 듣기"
+                              >
+                                <span className="material-symbols-outlined text-[15px]">volume_up</span>
+                              </button>
+                              <button
+                                className={`w-7 h-7 rounded-full flex items-center justify-center transition cursor-pointer active:scale-90 ${
+                                  isBookmarkedRec ? "bg-amber-500 text-white shadow-xs" : "bg-slate-200 text-slate-600 hover:bg-slate-300"
+                                }`}
+                                onClick={() => handleToggleBookmark(item.naturalExpression, item.koreanTip, item.originalText)}
+                                type="button"
+                                title="표현 북마크 저장"
+                              >
+                                <span className="material-symbols-outlined text-[16px]">
+                                  {isBookmarkedRec ? "star" : "grade"}
+                                </span>
+                              </button>
+                            </div>
+                          </div>
+                          <p className="text-sm font-bold text-emerald-950">{item.naturalExpression}</p>
+                        </div>
+
+                        {/* 4. Korean Coaching Tip */}
+                        <p className="text-xs text-[#434655] font-medium leading-relaxed bg-[#f2f3ff]/60 p-2.5 rounded-xl">
+                          💡 {item.koreanTip}
+                        </p>
+                      </div>
+                    );
+                  })}
+                </>
+              )}
+            </div>
+
+            {/* Bottom Sticky Bar */}
+            <div className="absolute bottom-0 left-0 right-0 p-3 bg-white/95 backdrop-blur-md border-t border-gray-100 flex items-center gap-2 z-20 shadow-lg">
+              <button
+                onClick={() => router.replace("/")}
+                type="button"
+                className="w-full py-3 rounded-2xl bg-[#004ac6] hover:bg-[#2563eb] text-white text-sm font-bold flex items-center justify-center gap-1.5 transition-all active:scale-95 cursor-pointer shadow-md"
+              >
+                <span>🐾</span>
+                <span>확인 완료 / 메인으로 나가기</span>
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -1614,10 +1876,10 @@ export default function FreeTalkPage() {
             </div>
             <div className="flex flex-col gap-1">
               <h3 className="font-headline-md text-lg font-bold text-[#131b2e]">
-                오늘 나눈 대화를 고양이와 함께 복습해볼래냥? 🐾
+                오늘 나눈 대화의 피드백을 확인해볼래냥? 🐾
               </h3>
               <p className="font-body-sm text-xs text-[#737686]">
-                대화를 마무리하기 전에 토키캣과 함께 문법 교정과 원어민 추천 표현을 복습해보세요!
+                토키캣이 분석한 문법 오류, 어색한 단어 교정, 더 자연스러운 원어민 표현을 한눈에 확인할 수 있어요!
               </p>
             </div>
             <div className="flex flex-col gap-2.5 w-full pt-2">
@@ -1625,12 +1887,12 @@ export default function FreeTalkPage() {
                 className="w-full py-3 rounded-2xl bg-[#004ac6] text-white font-label-md text-sm font-bold shadow-md hover:bg-[#2563eb] transition cursor-pointer flex items-center justify-center gap-1.5"
                 onClick={() => {
                   setIsExitConfirmOpen(false);
-                  handleOpenReview();
+                  handleOpenFeedbackReport();
                 }}
                 type="button"
               >
-                <span>🎧</span>
-                <span>복습하기 🎧</span>
+                <span>💡</span>
+                <span>내 대화 피드백 보기 🐾</span>
               </button>
               <button
                 className="w-full py-2.5 rounded-2xl bg-slate-100 text-slate-700 font-label-md text-xs font-bold hover:bg-slate-200 transition cursor-pointer"
